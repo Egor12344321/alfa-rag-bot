@@ -1,0 +1,34 @@
+digraph G {
+
+graph [rankdir=TB, bgcolor="#ffffff", fontcolor="#52647a", pad=0.3, nodesep=0.35, ranksep=0.55,
+       fontname="DejaVu Sans", fontsize=13, splines=polyline];
+node [shape=box, style="rounded,filled", fontname="DejaVu Sans", fontsize=13,
+      color="#cdd8e2", fillcolor="#f3f6fa", fontcolor="#17283b", margin="0.20,0.14", penwidth=1.3];
+edge [fontname="DejaVu Sans", fontsize=10, color="#77889a", fontcolor="#52647a", arrowsize=0.7];
+
+start [label="Входящий вопрос\nЗагрузить профиль и состояние"];
+intent [label="Запрошено\nнапоминание?", shape=diamond, style=filled, fillcolor="#fff2e9"];
+rem [label="Передать в reminders\nСохранить контекст запроса"];
+clear [label="Задача\nпонятна?", shape=diamond, style=filled, fillcolor="#fff2e9"];
+ask [label="Одно уточнение\nСохранить исходный вопрос"];
+search [label="Найти основания ответа\nИ отдельно — карточки каталога"];
+enough [label="Оснований\nдостаточно?", shape=diamond, style=filled, fillcolor="#fff2e9"];
+answer [label="Ответ по фрагментам\nПроверка цитат и ссылок", fillcolor="#e7f4ed"];
+missing [label="Обозначить недостающие сведения\nНе дополнять ответ выдумкой", fillcolor="#fff0f0"];
+next [label="Уместен следующий шаг?\nДобавить 0–1 проверенный материал"];
+save [label="Сохранить ответ + источники + delivery\nWorker отправляет в Telegram", fillcolor="#e8efff"];
+start -> intent;
+intent -> rem [label="да"];
+intent -> clear [label="нет"];
+clear -> ask [label="нет"];
+clear -> search [label="да"];
+ask -> search [label="ответ / ограниченное допущение"];
+search -> enough;
+enough -> answer [label="да"];
+enough -> missing [label="нет"];
+answer -> next; missing -> next;
+next -> save;
+{rank=same; rem; clear;}
+{rank=same; answer; missing;}
+
+}

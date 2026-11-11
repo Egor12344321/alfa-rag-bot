@@ -1,0 +1,31 @@
+digraph G {
+
+graph [rankdir=TB, bgcolor="#ffffff", fontcolor="#52647a", pad=0.3, nodesep=0.35, ranksep=0.55,
+       fontname="DejaVu Sans", fontsize=13, splines=polyline];
+node [shape=box, style="rounded,filled", fontname="DejaVu Sans", fontsize=13,
+      color="#cdd8e2", fillcolor="#f3f6fa", fontcolor="#17283b", margin="0.20,0.14", penwidth=1.3];
+edge [fontname="DejaVu Sans", fontsize=10, color="#77889a", fontcolor="#52647a", arrowsize=0.7];
+
+draft [label="Запрос и контекст\nЧерновик в conversations"];
+complete [label="Тема, дата, зона\nи повтор известны?", shape=diamond, style=filled, fillcolor="#fff2e9"];
+ask [label="Уточнить недостающие поля\nДата события не угадывается"];
+preview [label="Показать точную дату и правило\nПользователь подтверждает"];
+commit [label="Одна транзакция\nreminder + confirmation delivery\nЗакрыть черновик", fillcolor="#e7f4ed"];
+due [label="Worker: наступило next_run_at\nЗаблокировать строку на время транзакции"];
+outbox [label="Создать delivery с уникальным ключом\nРассчитать следующий запуск", fillcolor="#e8efff"];
+send [label="Проверить revision и отмену\nОтправить через Telegram"];
+ok [label="Принято\nTelegram?", shape=diamond, style=filled, fillcolor="#fff2e9"];
+done [label="sent + message_id\nЗафиксировать событие", fillcolor="#e7f4ed"];
+retry [label="Временная ошибка → backoff\nПостоянная → dead / отключение", fillcolor="#fff0f0"];
+draft -> complete;
+complete -> ask [label="нет"];
+ask -> draft [label="ответ", constraint=false];
+complete -> preview [label="да"];
+preview -> commit [label="подтверждено"];
+commit -> due -> outbox -> send -> ok;
+ok -> done [label="да"];
+ok -> retry [label="нет"];
+retry -> send [label="повтор по политике", constraint=false];
+{rank=same; done; retry;}
+
+}

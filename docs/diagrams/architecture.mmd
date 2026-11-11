@@ -1,0 +1,9 @@
+flowchart TB
+    SOURCE[("alfa_source · только чтение")] --> INGEST["ingest · очистка и embeddings"]
+    INGEST --> DB[("assistant_db · PostgreSQL + pgvector")]
+    TG["Telegram"] --> APP["app · диалог и поиск"]
+    APP --> DB
+    APP --> LLM["LLM · разрешённый контекст"]
+    DB --> WORKER["worker · расписание и доставка"]
+    WORKER --> TG
+    WORKER --> DB

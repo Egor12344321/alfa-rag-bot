@@ -1,0 +1,12 @@
+erDiagram
+    INGESTION_RUNS ||--o{ MATERIALS : versions
+    MATERIALS ||--o{ CHUNKS : contains
+    MATERIALS ||--o{ MATERIAL_TOPICS : tagged
+    TOPICS ||--o{ MATERIAL_TOPICS : includes
+    USERS ||--o{ CONVERSATIONS : has
+    CONVERSATIONS ||--o{ MESSAGES : contains
+    MESSAGES ||--o{ MESSAGE_SOURCES : cites
+    CHUNKS ||--o{ MESSAGE_SOURCES : supports
+    USERS ||--o{ REMINDERS : owns
+    REMINDERS |o--o{ DELIVERIES : schedules
+    MESSAGES |o--o{ DELIVERIES : sends
