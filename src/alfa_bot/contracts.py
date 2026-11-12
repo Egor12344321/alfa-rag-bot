@@ -106,6 +106,7 @@ class Knowledge(Protocol):
         run_id: UUID,
         exclude: tuple[SourceKey, ...] = (),
         limit: int = 1,
+        source: SourceKey | None = None,
     ) -> tuple[MaterialCard, ...]:
         """Активные разрешённые карточки того же run; free_only — жёсткий фильтр."""
         ...

@@ -1,7 +1,13 @@
 import argparse
+import sys
 
 
 def main() -> None:
+    if "--check-config" not in sys.argv[1:]:
+        from alfa_bot.knowledge.cli import main as ingest
+
+        ingest()
+        return
     parser = argparse.ArgumentParser(description="Подготовка знаний: точка расширения Python 1")
     parser.add_argument("--check-config", action="store_true", help="Проверить наличие source URL")
     args = parser.parse_args()
