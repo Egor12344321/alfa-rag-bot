@@ -16,3 +16,6 @@ private_data/*
 *.egg-info/
 dist/
 build/
+contrib/data-module/.venv/
+contrib/data-module/models/
+contrib/data-module/private_data/

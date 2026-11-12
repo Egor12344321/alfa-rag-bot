@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "alfa-kurs-data"
+version = "0.1.0"
+description = "Data module for Alfa Kurs Telegram assistant"
+requires-python = ">=3.11"
+dependencies = [
+    "beautifulsoup4>=4.12,<5",
+    "pgvector>=0.3,<1",
+    "psycopg[binary,pool]>=3.2,<4",
+    "sentence-transformers>=3.0,<6",
+]
+
+[project.scripts]
+alfa-kurs-ingest = "alfa_bot.knowledge.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
