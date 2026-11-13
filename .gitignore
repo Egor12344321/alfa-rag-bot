@@ -16,3 +16,7 @@ private_data/*
 *.egg-info/
 dist/
 build/
+
+# Python virtual environment
+.venv/
+venv/
