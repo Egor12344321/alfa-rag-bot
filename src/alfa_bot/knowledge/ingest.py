@@ -25,6 +25,7 @@ async def import_pgvector(
     materials: Path | None,
     source_url: str,
     if_empty: bool,
+    force: bool = False,
 ) -> dict:
     settings.validate_runtime(telegram=False)
     target = Database(settings.database_url)
@@ -55,7 +56,9 @@ async def import_pgvector(
                 client,
                 timeout=settings.embedding_timeout,
             )
-            return await replace_index(target.sessions, chunks, embeddings, if_empty=if_empty)
+            return await replace_index(
+                target.sessions, chunks, embeddings, if_empty=if_empty, force=force,
+            )
     finally:
         await target.close()
 
@@ -75,7 +78,9 @@ def main() -> None:
     parser.add_argument(
         "--model", default="intfloat/multilingual-e5-small", help="Модель legacy E5"
     )
-    parser.add_argument("--if-empty", action="store_true", help="Импорт только в пустой индекс")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--if-empty", action="store_true", help="Импорт только в пустой индекс")
+    mode.add_argument("--force", action="store_true", help="Пересчитать существующий индекс")
     args = parser.parse_args()
     backend = args.backend or ("bm25" if args.chunks else "pgvector")
     if backend == "pgvector":
@@ -90,10 +95,11 @@ def main() -> None:
                 materials=args.materials,
                 source_url=source_url,
                 if_empty=args.if_empty,
+                force=args.force,
             )
         )
     else:
-        if not args.chunks or args.if_empty:
+        if not args.chunks or args.if_empty or args.force:
             parser.error("Для bm25/hybrid нужен --chunks.")
         result = asyncio.run(
             build_index(

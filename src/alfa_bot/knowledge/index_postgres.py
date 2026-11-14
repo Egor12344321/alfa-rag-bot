@@ -42,7 +42,10 @@ async def replace_index(
     embeddings: Embeddings,
     *,
     if_empty: bool = False,
+    force: bool = False,
 ) -> dict:
+    if if_empty and force:
+        raise ValueError("Выберите --if-empty или --force.")
     if not chunks:
         raise ValueError("Индекс без чанков нельзя опубликовать.")
     model = embeddings.model_name
@@ -55,7 +58,7 @@ async def replace_index(
     }
     async with sessions() as session:
         if (current := await read_index_state(session)) and (
-            if_empty or current.fingerprint == fingerprint
+            if_empty or (not force and current.fingerprint == fingerprint)
         ):
             logger.info("Knowledge index already exists; upload skipped")
             return stats | {"status": "unchanged"}
@@ -86,7 +89,7 @@ async def replace_index(
     async with sessions.begin() as session:
         await session.execute(INDEX_LOCK)
         if (current := await read_index_state(session)) and (
-            if_empty or current.fingerprint == fingerprint
+            if_empty or (not force and current.fingerprint == fingerprint)
         ):
             return stats | {"status": "unchanged"}
         await session.execute(text("DELETE FROM kb.chunks"))
