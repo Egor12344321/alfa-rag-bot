@@ -1,8 +1,30 @@
-from datetime import UTC, datetime
+import re
+from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from alfa_bot.assistant.schemas import ReminderFields
 from alfa_bot.contracts import ReminderIntent
+
+_IN_MINUTES = re.compile(
+    r"\bнапомни(?:те)?\s+через\s+([1-9][0-9]{0,3})\s+минут(?:у|ы)?\b", re.IGNORECASE,
+)
+
+
+def relative_minutes(text: str) -> int | None:
+    match = _IN_MINUTES.search(text)
+    return int(match[1]) if match else None
+
+
+def resolve_relative_minutes(
+    minutes: int, timezone: str | None, *, now: datetime,
+) -> datetime | None:
+    if not timezone:
+        return None
+    try:
+        target = now.astimezone(UTC) + timedelta(minutes=minutes)
+        return target.astimezone(ZoneInfo(timezone)).replace(tzinfo=None)
+    except (ZoneInfoNotFoundError, ValueError, OverflowError):
+        return None
 
 
 def validate_reminder(fields: ReminderFields, *, now: datetime, material_url: str | None):

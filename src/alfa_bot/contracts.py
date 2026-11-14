@@ -1,23 +1,20 @@
-from dataclasses import dataclass, field
+from dataclasses import field
 from datetime import datetime
 from enum import StrEnum
 from typing import Protocol
 from urllib.parse import urlsplit
 
+from pydantic import ConfigDict
+from pydantic.dataclasses import dataclass
 
-# ============================================================================
-# Контракты интеграции Telegram-бота с assistant.
-# Разработчик assistant реализует AssistantPort и возвращает объекты этих типов.
-# Telegram-адаптер отображает Reply и передаёт ReminderIntent в ReminderService.
-# Проверки __post_init__ отклоняют некорректные данные с ValueError.
-# ============================================================================
+DTO_CONFIG = ConfigDict(extra="forbid", strict=True)
 
-# Вариант результата: определяет, какое поле Reply заполняет assistant.
+
 class ReplyType(StrEnum):
-    ANSWER = "answer"                  # Готовый ответ на вопрос: Reply.answer.
-    REMINDER = "reminder"              # Собранное напоминание: Reply.reminder.
-    CLARIFICATION = "clarification"    # Нужно уточнение: вопрос в Reply.text.
-    OUT_OF_SCOPE = "out_of_scope"      # Сообщение вне темы: бот покажет подсказку.
+    ANSWER = "answer"
+    REMINDER = "reminder"
+    CLARIFICATION = "clarification"
+    OUT_OF_SCOPE = "out_of_scope"
 
 
 # Вид материала для подписи на карточке в Telegram.
@@ -34,8 +31,7 @@ class MaterialAccess(StrEnum):
     UNKNOWN = "unknown"
 
 
-# Данные одной карточки источника или рекомендации с кнопкой открытия.
-@dataclass(frozen=True)
+@dataclass(frozen=True, config=DTO_CONFIG)
 class MaterialCard:
     """Материал из каталога, а не ссылка, придуманная LLM.
 
@@ -44,7 +40,7 @@ class MaterialCard:
     """
 
     title: str  # Название материала из каталога.
-    url: str  # HTTP(S) ссылка, которую бот поместит в кнопку.
+    url: str
     kind: MaterialKind
     access: MaterialAccess = MaterialAccess.UNKNOWN
     description: str = ""
@@ -53,8 +49,6 @@ class MaterialCard:
     def __post_init__(self) -> None:
         if not self.title.strip():
             raise ValueError("У материала должно быть название.")
-        if not isinstance(self.kind, MaterialKind) or not isinstance(self.access, MaterialAccess):
-            raise ValueError("Используйте MaterialKind и MaterialAccess.")
         try:
             parsed = urlsplit(self.url)
             valid_url = (
@@ -73,28 +67,21 @@ class MaterialCard:
             raise ValueError("Неизвестную цену передавайте как None.")
 
 
-# Содержимое ответа на вопрос: текст, использованные источники и рекомендации.
-@dataclass(frozen=True)
+@dataclass(frozen=True, config=DTO_CONFIG)
 class Answer:
-    """Готовый текст; sources использованы в ответе, recommendations — для изучения.
+    """Метка [1] в тексте указывает на первый элемент sources."""
 
-    Вопрос по теме без найденных материалов остаётся ANSWER: assistant сообщает
-    об отсутствии данных в text и возвращает пустые списки материалов.
-    """
-
-    text: str  # Непустой текст ответа без Telegram-разметки.
-    sources: list[MaterialCard] = field(default_factory=list)  # На чём основан ответ.
-    recommendations: list[MaterialCard] = field(default_factory=list)  # Что изучить дальше.
+    text: str
+    sources: list[MaterialCard] = field(default_factory=list)
+    recommendations: list[MaterialCard] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         if not self.text.strip():
             raise ValueError("Ответ должен содержать текст.")
-        if any(not isinstance(item, MaterialCard) for item in [*self.sources, *self.recommendations]):
-            raise ValueError("Материалы передавайте как MaterialCard.")
 
 
 # Полные данные для подготовки черновика; assistant сам напоминание в БД не создаёт.
-@dataclass(frozen=True)
+@dataclass(frozen=True, config=DTO_CONFIG)
 class ReminderIntent:
     """Полностью собранные данные: местная дата без tzinfo и часовой пояс IANA."""
 
@@ -106,7 +93,7 @@ class ReminderIntent:
 
 
 # Единый результат обработки сообщения; комбинацию полей проверяет __post_init__.
-@dataclass(frozen=True)
+@dataclass(frozen=True, config=DTO_CONFIG)
 class Reply:
     """Результат assistant; заполняется только полезная нагрузка выбранного типа.
 
@@ -123,12 +110,10 @@ class Reply:
     reminder: ReminderIntent | None = None  # Заполняется только для REMINDER.
 
     def __post_init__(self) -> None:
-        if not isinstance(self.type, ReplyType):
-            raise ValueError("Используйте значение ReplyType.")
         if self.type == ReplyType.ANSWER:
-            valid = isinstance(self.answer, Answer) and self.reminder is None and not self.text
+            valid = self.answer is not None and self.reminder is None and not self.text
         elif self.type == ReplyType.REMINDER:
-            valid = isinstance(self.reminder, ReminderIntent) and self.answer is None and not self.text
+            valid = self.reminder is not None and self.answer is None and not self.text
         elif self.type == ReplyType.CLARIFICATION:
             valid = bool(self.text.strip()) and self.answer is None and self.reminder is None
         else:
@@ -153,6 +138,3 @@ class AssistantPort(Protocol):
         это не UUID пользователя из общей БД. Telegram не хранит историю для LLM.
         """
         ...
-
-
-# ================= Конец контрактов интеграции с assistant ===================
