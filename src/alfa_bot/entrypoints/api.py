@@ -6,7 +6,7 @@ from fastapi.responses import JSONResponse
 
 from alfa_bot.infra.config import Settings
 from alfa_bot.infra.db import Database, DatabasePort
-from alfa_bot.infra.log_setup import configure_logging
+from alfa_bot.infra.logging import configure_logging
 
 
 def create_app(settings: Settings | None = None, database: DatabasePort | None = None) -> FastAPI:

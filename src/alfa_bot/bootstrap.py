@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 
-from alfa_bot.assistant.repository import UnconfiguredAssistantRepository
+from alfa_bot.assistant.repository import AssistantRepository
 from alfa_bot.assistant.service import AssistantService
 from alfa_bot.infra.db import Database
 from alfa_bot.infra.embeddings import LocalEmbeddings
@@ -23,35 +23,19 @@ class Services:
 
 
 def build_services(database: Database) -> Services:
-    """Общее место сборки зависимостей приложения."""
-
-    knowledge = KnowledgeService(
-        KnowledgeRepository(database.sessions),
-        LocalEmbeddings(),
-    )
-
-    reminders = ReminderService(
-        ReminderRepository(database.sessions),
-    )
-
-    assistant_repository = UnconfiguredAssistantRepository(
-        database.sessions,
-    )
-
+    """Общее место сборки зависимостей. Пока все бизнес-адаптеры — заглушки."""
+    knowledge = KnowledgeService(KnowledgeRepository(database.sessions), LocalEmbeddings())
+    reminders = ReminderService(ReminderRepository(database.sessions))
     assistant = AssistantService(
-        assistant_repository,
+        AssistantRepository(database.sessions),
         knowledge,
         reminders,
         UnconfiguredLLM(),
     )
-
-    inbox = Inbox(database.sessions)
-    outbox = Outbox(database.sessions)
-
     return Services(
-        knowledge=knowledge,
-        assistant=assistant,
-        reminders=reminders,
-        inbox=inbox,
-        outbox=outbox,
+        knowledge,
+        assistant,
+        reminders,
+        Inbox(database.sessions),
+        Outbox(database.sessions),
     )
