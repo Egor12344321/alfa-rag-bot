@@ -4,39 +4,30 @@ build-backend = "hatchling.build"
 
 [project]
 name = "alfa-rag-bot"
-version = "0.1.0"
-description = "Каркас Telegram RAG помощника Альфа Курс"
-readme = "README.md"
-requires-python = ">=3.12,<3.13"
+version = "0.2.0"
+description = "Telegram RAG-помощник Альфа-Курса"
+requires-python = ">=3.12"
 dependencies = [
-    "fastapi>=0.115,<1",
-    "uvicorn>=0.32,<1",
-    "pydantic-settings>=2.6,<3",
-    "sqlalchemy[asyncio]>=2.0.36,<2.1",
-    "psycopg[binary]>=3.2,<4",
-    "alembic>=1.14,<2",
-    "pgvector>=0.3,<1",
-    "aiogram>=3.15,<4",
-    "langchain-core>=1,<2",
-    "langchain-text-splitters>=1,<2",
-    "pyyaml>=6,<7",
-    "tzdata>=2024.2,<2027",
+  "aiogram>=3.15,<4",
+  "sqlalchemy[asyncio]>=2.0.36,<2.1",
+  "asyncpg>=0.30,<1",
+  "pydantic-settings>=2.6,<3",
+  "httpx>=0.28,<1",
+  "numpy>=1.26,<3",
+  "snowballstemmer>=2.2,<4",
+  "tzdata>=2024.2",
 ]
 
-[project.scripts]
-alfa-api = "alfa_bot.entrypoints.api:main"
-alfa-polling = "alfa_bot.entrypoints.polling:main"
-alfa-worker = "alfa_bot.entrypoints.worker:main"
-alfa-ingest = "alfa_bot.entrypoints.ingest:main"
-
-[dependency-groups]
-dev = ["pytest>=8,<10", "httpx>=0.28,<1", "ruff>=0.8,<1"]
+[project.optional-dependencies]
+semantic = ["sentence-transformers>=3.3,<6"]
+dev = ["pytest>=8,<10", "aiosqlite>=0.20,<1", "ruff>=0.8,<1"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/alfa_bot"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["src"]
 
 [tool.ruff]
 target-version = "py312"
@@ -44,6 +35,3 @@ line-length = 100
 
 [tool.ruff.lint]
 select = ["E", "F", "I"]
-
-[tool.ruff.lint.per-file-ignores]
-"migrations/versions/*.py" = ["E501"]

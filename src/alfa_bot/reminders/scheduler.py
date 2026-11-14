@@ -17,7 +17,7 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from alfa_bot.infra.models import Reminder
+from alfa_bot.reminders.models import Reminder
 from alfa_bot.reminders.repository import ReminderRepository
 from alfa_bot.reminders.schedule import ScheduleError, calculate_next_run
 

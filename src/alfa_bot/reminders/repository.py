@@ -4,7 +4,7 @@ from uuid import UUID
 from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from alfa_bot.infra.models import Reminder
+from alfa_bot.reminders.models import Reminder
 
 
 class ReminderRepository:

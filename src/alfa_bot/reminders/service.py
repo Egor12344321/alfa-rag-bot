@@ -6,7 +6,7 @@ from uuid import UUID, uuid4
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from alfa_bot.infra.models import Reminder
+from alfa_bot.reminders.models import Reminder
 from alfa_bot.reminders.repository import ReminderRepository
 from alfa_bot.reminders.schedule import (
     ScheduleError,
@@ -17,6 +17,14 @@ from alfa_bot.reminders.schedule import (
 
 
 MAX_TEXT_LENGTH = 1000
+
+
+class ReminderError(ValueError):
+    """Ошибка данных или состояния напоминания."""
+
+
+class ReminderNotFoundError(ReminderError):
+    """Напоминания нет либо оно принадлежит другому пользователю."""
 
 
 @dataclass(frozen=True)
@@ -41,15 +49,6 @@ class ReminderView:
     next_run_at: datetime
     status: str
     material_url: str | None = None
-
-
-class ReminderError(ValueError):
-    """Ошибка данных или состояния напоминания."""
-
-
-class ReminderNotFoundError(ReminderError):
-    """Напоминания нет либо оно принадлежит другому пользователю."""
-
 
 
 def _utc(value: datetime) -> datetime:

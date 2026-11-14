@@ -1,22 +1,8 @@
-t.venv/
+.env
+.venv/
 __pycache__/
-*.py[cod]
 .pytest_cache/
 .ruff_cache/
-.env
-.env.*
-!.env.example
-private_data/*
-!private_data/README.md
-!private_data/.gitkeep
-*.backup
-*.dump
-*.jsonl
-*.log
+private_data/
 *.egg-info/
 dist/
-build/
-
-# Python virtual environment
-.venv/
-venv/
