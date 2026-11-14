@@ -12,11 +12,13 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import (
     CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup,
-    KeyboardButton, Message, ReplyKeyboardMarkup,
+    KeyboardButton, LinkPreviewOptions, Message, ReplyKeyboardMarkup,
 )
 from sqlalchemy.exc import SQLAlchemyError
 
-from alfa_bot.contracts import AssistantPort, ReplyType
+from alfa_bot.contracts import (
+    Answer, AssistantPort, MaterialAccess, MaterialCard, MaterialKind, Reply, ReplyType,
+)
 from alfa_bot.reminders.service import (
     ReminderDraft, ReminderError, ReminderService, ReminderView,
 )
@@ -29,6 +31,19 @@ router.callback_query.filter(F.message.chat.type == "private")
 
 ASK_BUTTON = "Задать вопрос"
 REMINDERS_BUTTON = "Мои напоминания"
+OUT_OF_SCOPE_TEXT = (
+    "Я помогаю с вопросами о бизнесе и обучении на «Альфа-Курсе», "
+    "а ещё создаю напоминания.\n\n"
+    "Задайте вопрос по теме или напишите, о чём и когда напомнить."
+)
+MATERIAL_KIND_NAMES = {
+    MaterialKind.ARTICLE: "Статья", MaterialKind.COURSE: "Курс",
+    MaterialKind.OTHER: "Материал",
+}
+MATERIAL_ACCESS_NAMES = {
+    MaterialAccess.FREE: "Бесплатно", MaterialAccess.PAID: "Платно",
+    MaterialAccess.UNKNOWN: "Условия доступа не указаны",
+}
 FREQUENCY_NAMES = {
     "once": "один раз", "daily": "ежедневно",
     "weekly": "еженедельно", "monthly": "ежемесячно",
@@ -45,6 +60,16 @@ class DraftCallback(CallbackData, prefix="draft"):
     draft_id: UUID
 
 
+class ReminderCallback(CallbackData, prefix="rem"):
+    action: Literal["frequency", "disable", "delete", "delete_yes", "view"]
+    reminder_id: UUID
+
+
+class FrequencyCallback(CallbackData, prefix="freq"):
+    frequency: Literal["once", "daily", "weekly", "monthly"]
+    reminder_id: UUID
+
+
 def _now_utc() -> datetime:
     return datetime.now(UTC)
 
@@ -58,6 +83,72 @@ def main_keyboard() -> ReplyKeyboardMarkup:
         resize_keyboard=True,
         input_field_placeholder="Вопрос или просьба о напоминании",
     )
+
+
+def _text_chunks(text: str) -> list[str]:
+    """Делим длинный текст без разметки, оставляя запас к лимиту Telegram.
+
+    Счёт в единицах UTF-16 учитывает emoji. По возможности сохраняем абзацы.
+    """
+    remaining = text.strip()
+    chunks = []
+    while remaining:
+        units = 0
+        end = 0
+        for char in remaining:
+            size = 2 if ord(char) > 0xFFFF else 1
+            if units + size > 4000:
+                break
+            units += size
+            end += 1
+        if end < len(remaining):
+            boundary = remaining.rfind("\n", 0, end + 1)
+            if boundary < end // 2:
+                boundary = remaining.rfind(" ", 0, end + 1)
+            if boundary >= end // 2:
+                end = boundary
+        chunks.append(remaining[:end].rstrip())
+        remaining = remaining[end:].lstrip()
+    return chunks
+
+
+async def _send_text(
+    message: Message, text: str, *, reply_markup: InlineKeyboardMarkup | None = None,
+) -> None:
+    chunks = _text_chunks(text)
+    for index, chunk in enumerate(chunks):
+        await message.answer(
+            chunk, parse_mode=None,
+            link_preview_options=LinkPreviewOptions(is_disabled=True),
+            reply_markup=reply_markup if index == len(chunks) - 1 else None,
+        )
+
+
+def _material_text(material: MaterialCard, *, heading: str, number: int) -> str:
+    access = MATERIAL_ACCESS_NAMES[material.access]
+    if material.price:
+        access += f" · {material.price}"
+    result = (
+        f"{heading} · {number}\n\n{material.title}\n"
+        f"{MATERIAL_KIND_NAMES[material.kind]} · {access}"
+    )
+    if material.description.strip():
+        result += f"\n\n{material.description}"
+    return result
+
+
+async def _send_answer(message: Message, answer: Answer) -> None:
+    await _send_text(message, answer.text)
+    for heading, materials in (
+        ("Источник", answer.sources), ("Рекомендация", answer.recommendations),
+    ):
+        for number, material in enumerate(materials, start=1):
+            await _send_text(
+                message, _material_text(material, heading=heading, number=number),
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                    InlineKeyboardButton(text="Открыть материал", url=material.url),
+                ]]),
+            )
 
 
 def _draft_keyboard(draft: ReminderDraft) -> InlineKeyboardMarkup:
@@ -106,6 +197,64 @@ def _saved_text(reminder: ReminderView) -> str:
     )
 
 
+def _reminder_text(reminder: ReminderView, notice: str = "") -> str:
+    text = _details(
+        text=reminder.text, run_at=reminder.next_run_at,
+        timezone=reminder.timezone, frequency=reminder.frequency,
+    )
+    text += f"\nСтатус: {STATUS_NAMES.get(reminder.status, reminder.status)}"
+    return f"{notice}\n\n{text}" if notice else text
+
+
+def _reminder_keyboard(reminder: ReminderView) -> InlineKeyboardMarkup:
+    rows = []
+    if reminder.status != "done":
+        rows.append([InlineKeyboardButton(
+            text="Изменить частоту",
+            callback_data=ReminderCallback(action="frequency", reminder_id=reminder.id).pack(),
+        )])
+    if reminder.status == "active":
+        rows.append([InlineKeyboardButton(
+            text="Отключить",
+            callback_data=ReminderCallback(action="disable", reminder_id=reminder.id).pack(),
+        )])
+    rows.append([InlineKeyboardButton(
+        text="Удалить",
+        callback_data=ReminderCallback(action="delete", reminder_id=reminder.id).pack(),
+    )])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _frequency_keyboard(reminder: ReminderView) -> InlineKeyboardMarkup:
+    buttons = [
+        InlineKeyboardButton(
+            text=("✓ " if frequency == reminder.frequency else "") + label,
+            callback_data=FrequencyCallback(frequency=frequency, reminder_id=reminder.id).pack(),
+        )
+        for frequency, label in FREQUENCY_NAMES.items()
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=[
+        buttons[:2], buttons[2:],
+        [InlineKeyboardButton(
+            text="Назад",
+            callback_data=ReminderCallback(action="view", reminder_id=reminder.id).pack(),
+        )],
+    ])
+
+
+def _delete_keyboard(reminder_id: UUID) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(
+            text="Да, удалить",
+            callback_data=ReminderCallback(action="delete_yes", reminder_id=reminder_id).pack(),
+        ),
+        InlineKeyboardButton(
+            text="Отмена",
+            callback_data=ReminderCallback(action="view", reminder_id=reminder_id).pack(),
+        ),
+    ]])
+
+
 async def _remove_keyboard(bot: Bot, chat_id: int, message_id: int | None) -> None:
     if message_id is None:
         return
@@ -119,11 +268,61 @@ async def _remove_keyboard(bot: Bot, chat_id: int, message_id: int | None) -> No
         logger.info("Could not remove an old draft keyboard")
 
 
-async def _edit_or_send(message: Message, text: str) -> None:
+async def _edit_or_send(
+    message: Message, text: str, reply_markup: InlineKeyboardMarkup | None = None
+) -> Message:
+    if message.text == text and message.reply_markup == reply_markup:
+        return message
     try:
-        await message.edit_text(text, reply_markup=None, parse_mode=None)
-    except TelegramBadRequest:
-        await message.answer(text, parse_mode=None)
+        edited = await message.edit_text(text, reply_markup=reply_markup, parse_mode=None)
+        return edited if isinstance(edited, Message) else message
+    except TelegramBadRequest as error:
+        # Повторный callback может содержать старую копию уже обновлённой карточки.
+        if "message is not modified" in error.message.lower():
+            return message
+        return await message.answer(text, reply_markup=reply_markup, parse_mode=None)
+
+
+async def _private_message(callback: CallbackQuery) -> Message | None:
+    if (
+        not isinstance(callback.message, Message)
+        or callback.message.chat.id != callback.from_user.id
+    ):
+        await callback.answer("Сообщение недоступно.", show_alert=True)
+        return None
+    return callback.message
+
+
+async def _callback_reminder(
+    callback: CallbackQuery, reminders: ReminderService, reminder_id: UUID
+) -> ReminderView | None:
+    try:
+        return await reminders.get(
+            reminder_id=reminder_id, telegram_user_id=callback.from_user.id,
+        )
+    except ReminderError as error:
+        await callback.answer(str(error), show_alert=True)
+    except (SQLAlchemyError, OSError, TimeoutError):
+        logger.exception("Cannot load reminder for management")
+        await callback.answer("Не получилось загрузить напоминание. Попробуйте позже.", show_alert=True)
+    return None
+
+
+def _matches_delete(data: dict, reminder_id: UUID, message: Message) -> bool:
+    pending = data.get("delete_confirmation")
+    return isinstance(pending, dict) and (
+        pending.get("reminder_id") == str(reminder_id)
+        and pending.get("chat_id") == message.chat.id
+        and pending.get("message_id") == message.message_id
+    )
+
+
+async def _clear_delete(
+    state: FSMContext, reminder_id: UUID, message: Message
+) -> None:
+    if _matches_delete(await state.get_data(), reminder_id, message):
+        # Не затрагиваем возможный черновик создания в этом же состоянии FSM.
+        await state.update_data(delete_confirmation=None)
 
 
 async def _finish(
@@ -157,10 +356,14 @@ async def handle_help(message: Message) -> None:
         "Команды:\n"
         "/start — главное меню\n"
         "/help — помощь\n"
-        "/reminders — мои напоминания\n"
+        "/reminders — список, частота, отключение и удаление\n"
         "/cancel — отменить текущий черновик\n\n"
-        "Сейчас работает демонстрационный режим: любой обычный текст предлагает "
-        "разовое напоминание о продолжении обучения через две минуты.\n"
+        "Демонстрационный режим:\n"
+        "«тест ответ» — ответ и примеры карточек материалов;\n"
+        "«тест уточнение» — уточняющий вопрос;\n"
+        "«тест вне темы» — подсказка о возможностях бота.\n"
+        "Любой другой текст предлагает разовое напоминание "
+        "о продолжении обучения через две минуты.\n"
         "Запись создаётся только после подтверждения."
     )
 
@@ -204,12 +407,138 @@ async def handle_reminders(message: Message, reminders: ReminderService) -> None
         title += f" показаны последние 10 из {len(items)}."
     await message.answer(title, reply_markup=main_keyboard())
     for item in items[:10]:
-        text = _details(
-            text=item.text, run_at=item.next_run_at,
-            timezone=item.timezone, frequency=item.frequency,
+        await message.answer(
+            _reminder_text(item), reply_markup=_reminder_keyboard(item), parse_mode=None,
         )
-        text += f"\nСтатус: {STATUS_NAMES.get(item.status, item.status)}"
-        await message.answer(text, parse_mode=None)
+
+
+@router.callback_query(ReminderCallback.filter())
+async def handle_reminder_action(
+    callback: CallbackQuery,
+    callback_data: ReminderCallback,
+    state: FSMContext,
+    reminders: ReminderService,
+) -> None:
+    message = await _private_message(callback)
+    if message is None:
+        return
+    reminder_id = callback_data.reminder_id
+
+    if callback_data.action == "delete_yes":
+        if not _matches_delete(await state.get_data(), reminder_id, message):
+            await callback.answer(
+                "Подтверждение удаления устарело. Нажмите «Удалить» ещё раз.",
+                show_alert=True,
+            )
+            return
+        await callback.answer()
+        try:
+            deleted = await reminders.delete(
+                reminder_id=reminder_id, telegram_user_id=callback.from_user.id,
+            )
+        except (SQLAlchemyError, OSError, TimeoutError):
+            logger.exception("Cannot delete reminder")
+            await message.answer("Не получилось удалить напоминание. Попробуйте ещё раз позже.")
+            return
+        await _clear_delete(state, reminder_id, message)
+        await _edit_or_send(
+            message, "Напоминание удалено." if deleted else "Напоминание уже удалено или недоступно.",
+        )
+        return
+
+    reminder = await _callback_reminder(callback, reminders, reminder_id)
+    if reminder is None:
+        return
+    if reminder.status == "done" and callback_data.action in ("frequency", "disable"):
+        await _clear_delete(state, reminder_id, message)
+        await callback.answer("Напоминание уже выполнено.", show_alert=True)
+        await _edit_or_send(message, "Напоминание уже выполнено. Обновите «Мои напоминания».")
+        return
+
+    await callback.answer()
+    if callback_data.action != "delete":
+        await _clear_delete(state, reminder_id, message)
+
+    if callback_data.action == "frequency":
+        notice = "Выберите частоту напоминания."
+        if reminder.status == "paused":
+            notice += " Статус «отключено» сохранится."
+        await _edit_or_send(
+            message, _reminder_text(reminder, notice), _frequency_keyboard(reminder),
+        )
+    elif callback_data.action == "disable":
+        try:
+            updated = await reminders.disable(
+                reminder_id=reminder_id, telegram_user_id=callback.from_user.id,
+            )
+        except ReminderError as error:
+            await _edit_or_send(message, f"{error}\nОбновите «Мои напоминания».")
+            return
+        except (SQLAlchemyError, OSError, TimeoutError):
+            logger.exception("Cannot disable reminder")
+            await message.answer("Не получилось отключить напоминание. Попробуйте позже.")
+            return
+        await _edit_or_send(
+            message, _reminder_text(updated, "Напоминание отключено."), _reminder_keyboard(updated),
+        )
+    elif callback_data.action == "delete":
+        card = await _edit_or_send(
+            message, _reminder_text(reminder, "Удалить это напоминание?"),
+            _delete_keyboard(reminder_id),
+        )
+        await state.update_data(delete_confirmation={
+            "reminder_id": str(reminder_id), "chat_id": card.chat.id,
+            "message_id": card.message_id,
+        })
+    else:
+        await _edit_or_send(message, _reminder_text(reminder), _reminder_keyboard(reminder))
+
+
+@router.callback_query(FrequencyCallback.filter())
+async def handle_frequency_choice(
+    callback: CallbackQuery,
+    callback_data: FrequencyCallback,
+    state: FSMContext,
+    reminders: ReminderService,
+) -> None:
+    message = await _private_message(callback)
+    if message is None:
+        return
+    reminder = await _callback_reminder(callback, reminders, callback_data.reminder_id)
+    if reminder is None:
+        return
+    if reminder.status == "done":
+        await _clear_delete(state, reminder.id, message)
+        await callback.answer("Напоминание уже выполнено.", show_alert=True)
+        await _edit_or_send(message, "Напоминание уже выполнено. Обновите «Мои напоминания».")
+        return
+
+    await callback.answer()
+    await _clear_delete(state, reminder.id, message)
+    if callback_data.frequency == reminder.frequency:
+        # Повторный выбор не должен сдвигать ближайшую дату запуска.
+        updated = reminder
+        notice = "Частота не изменилась."
+    else:
+        try:
+            updated = await reminders.change_frequency(
+                reminder_id=reminder.id, telegram_user_id=callback.from_user.id,
+                frequency=callback_data.frequency, now=_now_utc(),
+            )
+        except ReminderError as error:
+            await _edit_or_send(message, f"{error}\nОбновите «Мои напоминания».")
+            return
+        except (SQLAlchemyError, OSError, TimeoutError):
+            logger.exception("Cannot change reminder frequency")
+            await message.answer("Не получилось изменить частоту. Попробуйте ещё раз позже.")
+            return
+        notice = "Частота изменена."
+    await _edit_or_send(message, _reminder_text(updated, notice), _reminder_keyboard(updated))
+
+
+@router.callback_query(F.data.startswith("rem:") | F.data.startswith("freq:"))
+async def handle_invalid_reminder_button(callback: CallbackQuery) -> None:
+    await callback.answer("Кнопка недействительна. Обновите «Мои напоминания».", show_alert=True)
 
 
 @router.callback_query(DraftCallback.filter())
@@ -321,13 +650,21 @@ async def handle_text(
         reply = await assistant.handle(
             telegram_user_id=message.from_user.id, text=text, now=_now_utc(),
         )
+        if not isinstance(reply, Reply):
+            raise ValueError("Assistant должен возвращать Reply.")
     except Exception:
         logger.exception("Assistant request failed")
         await message.answer("Сейчас не получается обработать сообщение. Попробуйте позже.")
         return
 
-    if reply.type == ReplyType.ANSWER and reply.text.strip():
-        await message.answer(reply.text, parse_mode=None)
+    if reply.type == ReplyType.ANSWER and reply.answer is not None:
+        await _send_answer(message, reply.answer)
+        return
+    if reply.type == ReplyType.CLARIFICATION:
+        await _send_text(message, reply.text)
+        return
+    if reply.type == ReplyType.OUT_OF_SCOPE:
+        await message.answer(OUT_OF_SCOPE_TEXT, parse_mode=None)
         return
     if reply.type != ReplyType.REMINDER or reply.reminder is None:
         logger.error("Assistant returned an incomplete reply")

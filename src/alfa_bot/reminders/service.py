@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from urllib.parse import urlsplit
 from uuid import UUID, uuid4
@@ -5,7 +6,6 @@ from uuid import UUID, uuid4
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from alfa_bot.contracts import ReminderDraft, ReminderView
 from alfa_bot.infra.models import Reminder
 from alfa_bot.reminders.repository import ReminderRepository
 from alfa_bot.reminders.schedule import (
@@ -17,6 +17,30 @@ from alfa_bot.reminders.schedule import (
 
 
 MAX_TEXT_LENGTH = 1000
+
+
+@dataclass(frozen=True)
+class ReminderDraft:
+    id: UUID
+    telegram_user_id: int
+    chat_id: int
+    text: str
+    frequency: str
+    timezone: str
+    starts_at: datetime
+    material_url: str | None = None
+
+
+@dataclass(frozen=True)
+class ReminderView:
+    id: UUID
+    text: str
+    frequency: str
+    timezone: str
+    starts_at: datetime
+    next_run_at: datetime
+    status: str
+    material_url: str | None = None
 
 
 class ReminderError(ValueError):
