@@ -2,7 +2,6 @@ from calendar import monthrange
 from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-
 SUPPORTED_FREQUENCIES = ("once", "daily", "weekly", "monthly")
 
 

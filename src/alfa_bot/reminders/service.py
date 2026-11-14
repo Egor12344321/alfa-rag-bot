@@ -15,7 +15,6 @@ from alfa_bot.reminders.schedule import (
     validate_frequency,
 )
 
-
 MAX_TEXT_LENGTH = 1000
 
 

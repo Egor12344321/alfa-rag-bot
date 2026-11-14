@@ -21,7 +21,6 @@ from alfa_bot.reminders.models import Reminder
 from alfa_bot.reminders.repository import ReminderRepository
 from alfa_bot.reminders.schedule import ScheduleError, calculate_next_run
 
-
 logger = logging.getLogger(__name__)
 
 
