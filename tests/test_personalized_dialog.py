@@ -1,5 +1,5 @@
 import asyncio
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from test_scenarios import NOW, ScriptedLLM, knowledge, setup_repository
 
@@ -208,6 +208,45 @@ def test_unavailable_index_preserves_state_and_reports_search_failure(tmp_path):
         )
         assert "недоступен" in reply.answer.text
         assert not (await repo.load(1)).history
+        await engine.dispose()
+
+    asyncio.run(scenario())
+def test_slow_reminder_uses_time_when_the_draft_is_ready(tmp_path):
+    async def scenario():
+        engine, repo = await setup_repository(tmp_path / "memory.db")
+        llm = ScriptedLLM(
+            {
+                "intent": "reminder",
+                "reminder": {"text": "проверить каталог", "timezone": "Europe/Moscow"},
+            },
+        )
+        draft_time = NOW + timedelta(minutes=3)
+        assistant = AssistantService(repo, knowledge(), llm, clock=lambda: draft_time)
+        reply = await assistant.handle(
+            telegram_user_id=1, text="Напомни через 1 минуту по МСК проверить каталог", now=NOW,
+        )
+        assert reply.reminder.local_datetime == datetime(2026, 11, 14, 13, 4)
+        await engine.dispose()
+
+    asyncio.run(scenario())
+
+
+def test_relevant_course_can_be_suggested_during_consultation(tmp_path):
+    async def scenario():
+        engine, repo = await setup_repository(tmp_path / "memory.db")
+        assistant = AssistantService(
+            repo,
+            knowledge(),
+            ScriptedLLM(
+                {"intent": "knowledge", "query": "Привлечение клиентов"},
+                GROUNDED,
+            ),
+        )
+        reply = await assistant.handle(
+            telegram_user_id=1, text="Как привлечь клиентов к нам?", now=NOW,
+        )
+        assert reply.answer.sources
+        assert any(item.kind == "course" for item in reply.answer.recommendations)
         await engine.dispose()
 
     asyncio.run(scenario())

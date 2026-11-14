@@ -21,6 +21,7 @@ from aiogram.types import (
     MessageEntity,
     ReplyKeyboardMarkup,
 )
+from aiogram.utils.chat_action import ChatActionSender
 from sqlalchemy.exc import SQLAlchemyError
 
 from alfa_bot.contracts import (
@@ -794,11 +795,13 @@ async def handle_text(
 
     try:
         # Реализация AssistantPort передаётся через DI в main.py.
-        reply = await assistant.handle(
-            telegram_user_id=message.from_user.id,
-            text=text,
-            now=_now_utc(),
-        )
+        received_at = _now_utc()
+        async with ChatActionSender.typing(bot=bot, chat_id=message.chat.id):
+            reply = await assistant.handle(
+                telegram_user_id=message.from_user.id,
+                text=text,
+                now=received_at,
+            )
         if not isinstance(reply, Reply):
             raise ValueError("Assistant должен возвращать Reply.")
     except Exception:

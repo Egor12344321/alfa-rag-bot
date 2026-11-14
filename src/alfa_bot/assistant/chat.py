@@ -28,7 +28,12 @@ async def run(telegram_user_id: int):
         ) as client:
             knowledge = await open_knowledge(config, database.sessions, client)
             llm = OllamaLLM(config.llm_model, client, context_length=config.ollama_context_length)
-            assistant = AssistantService(AssistantRepository(database.sessions), knowledge, llm)
+            assistant = AssistantService(
+                AssistantRepository(database.sessions),
+                knowledge,
+                llm,
+                clock=lambda: datetime.now(UTC),
+            )
             print("/exit — выйти; /new — очистить тестовый диалог; /cancel — отменить уточнение")
             while True:
                 try:

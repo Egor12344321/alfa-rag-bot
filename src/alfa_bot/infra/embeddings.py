@@ -1,12 +1,15 @@
 """Локальный E5; загрузка модели и вычисления вынесены из event loop."""
 
 import asyncio
+import logging
 import threading
 from typing import Protocol
 
 import httpx
 import numpy as np
 from numpy.typing import NDArray
+
+logger = logging.getLogger(__name__)
 
 
 class Embeddings(Protocol):
@@ -78,7 +81,10 @@ class OllamaEmbeddings:
             ):
                 raise ValueError("Invalid embedding shape or values")
             return vectors
-        except (httpx.HTTPError, TypeError, KeyError, ValueError):
+        except httpx.HTTPStatusError as error:
+            logger.warning("Ollama embeddings HTTP %d", error.response.status_code)
+            raise EmbeddingError("Ошибка локальной модели эмбеддингов.") from None
+        except (httpx.RequestError, TypeError, KeyError, ValueError):
             raise EmbeddingError("Ollama не вернул корректные эмбеддинги.") from None
 
     async def embed_query(self, text: str) -> NDArray[np.float32]:

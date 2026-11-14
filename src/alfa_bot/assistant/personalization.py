@@ -5,7 +5,8 @@ from alfa_bot.assistant.schemas import AccessFilter, AnswerStyle, Decision, Mate
 from alfa_bot.knowledge.models import SearchHit
 
 _INTRODUCTORY = re.compile(
-    r"\b(?:для\s+(?:новичк\w*|начинающ\w*)|с\s+нуля|основы|вводн\w*\s+курс)\b"
+    r"\b(?:для\s+(?:новичк\w*|начинающ\w*)|с\s+нуля|основы|азы|азбук\w*|"
+    r"первые\s+шаги|с\s+чего\s+начать|вводн\w*\s+курс)\b"
 )
 _ADVANCED = re.compile(
     r"\b(?:для\s+(?:опытн\w*|продвинут\w*)|продвинут\w*\s+(?:курс|уровень)|углубл[её]нн\w*)\b"
@@ -76,7 +77,9 @@ def recommendation_kind(
         and (decision.learning_goal or profile.get("course_preference") == "welcome")
     ):
         return "course"
-    return "article"
+    if decision.omit_courses or profile.get("course_preference") == "avoid":
+        return "article"
+    return "any"
 
 
 def recommendation_access(profile: dict, decision: Decision) -> AccessFilter:

@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from datetime import UTC, datetime
 
 import httpx
 from aiogram import Bot, Dispatcher
@@ -31,10 +32,12 @@ async def main() -> None:
             timeout=config.llm_timeout,
             trust_env=False,
         ) as client:
-            knowledge = await open_knowledge(config, database.sessions, client)
+            knowledge = await open_knowledge(config, database.sessions, client, require_index=False)
             repository = AssistantRepository(database.sessions)
             llm = OllamaLLM(config.llm_model, client, context_length=config.ollama_context_length)
-            assistant = AssistantService(repository, knowledge, llm)
+            assistant = AssistantService(
+                repository, knowledge, llm, clock=lambda: datetime.now(UTC)
+            )
             reminders = ReminderService(database.sessions)
             scheduler = ReminderScheduler(
                 database.sessions,

@@ -1,7 +1,9 @@
 import asyncio
 import io
 import os
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
@@ -11,10 +13,12 @@ from alembic.util.exc import CommandError
 from sqlalchemy import text
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.ext.asyncio import create_async_engine
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from alfa_bot.assistant.models import AssistantDialog
 from alfa_bot.reminders.models import Reminder
+from alfa_bot.reminders.scheduler import ReminderScheduler
+from alfa_bot.reminders.service import ReminderService
 
 ALEMBIC_INI = Path(__file__).resolve().parents[1] / "alembic.ini"
 
@@ -149,3 +153,50 @@ def test_fresh_database_accepts_catalog_but_rejects_paid_answer_body(postgres_da
             await engine.dispose()
 
     asyncio.run(check_schema())
+
+
+def test_scheduler_delivers_and_can_disable_repeats(postgres_database):
+    command.upgrade(Config(str(ALEMBIC_INI)), "0001_app_schema")
+
+    async def scenario():
+        engine = create_async_engine(postgres_database)
+        try:
+            start = datetime(2026, 11, 14, 10, tzinfo=UTC)
+            now = start
+            sessions = async_sessionmaker(engine, expire_on_commit=False)
+            reminders = ReminderService(sessions)
+            bot = AsyncMock()
+            scheduler = ReminderScheduler(sessions, bot, clock=lambda: now)
+            for frequency in ("once", "daily"):
+                draft = reminders.prepare(
+                    telegram_user_id=123,
+                    chat_id=123,
+                    text="Продолжить обучение",
+                    local_datetime=datetime(2026, 11, 14, 13, 2),
+                    timezone_name="Europe/Moscow",
+                    frequency=frequency,
+                    now=start,
+                )
+                saved = await reminders.confirm(
+                    draft=draft, telegram_user_id=123, chat_id=123, now=start,
+                )
+                if frequency == "daily":
+                    repeating = saved
+
+            now = start + timedelta(minutes=2)
+            assert await scheduler.run_once() == 2
+            assert await scheduler.run_once() == 0
+            assert bot.send_message.await_count == 2
+            assert all(call.kwargs["chat_id"] == 123 for call in bot.send_message.await_args_list)
+
+            updated = await reminders.change_frequency(
+                reminder_id=repeating.id, telegram_user_id=123, frequency="weekly", now=now,
+            )
+            assert updated.next_run_at == now + timedelta(weeks=1)
+            await reminders.disable(reminder_id=repeating.id, telegram_user_id=123)
+            now += timedelta(weeks=1)
+            assert await scheduler.run_once() == 0
+        finally:
+            await engine.dispose()
+
+    asyncio.run(scenario())

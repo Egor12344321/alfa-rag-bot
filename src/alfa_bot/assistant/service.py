@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 from weakref import WeakValueDictionary
@@ -35,8 +36,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 NO_KNOWLEDGE = (
-    "В базе знаний нет точного ответа. "
-    "Попробуйте уточнить вопрос или описать вашу ситуацию."
+    "В базе знаний нет точного ответа. Попробуйте уточнить вопрос или описать вашу ситуацию."
 )
 
 
@@ -47,10 +47,18 @@ def _answer(text: str) -> Reply:
 class AssistantService:
     """Реализация AssistantPort. Не создаёт и не отправляет напоминания."""
 
-    def __init__(self, repository: AssistantRepository, knowledge: KnowledgePort, llm: LLM):
+    def __init__(
+        self,
+        repository: AssistantRepository,
+        knowledge: KnowledgePort,
+        llm: LLM,
+        *,
+        clock: Callable[[], datetime] | None = None,
+    ):
         self.repository = repository
         self.knowledge = knowledge
         self.llm = llm
+        self.clock = clock
         self._locks: WeakValueDictionary[int, asyncio.Lock] = WeakValueDictionary()
 
     async def handle(self, *, telegram_user_id: int, text: str, now: datetime) -> Reply:
@@ -131,12 +139,18 @@ class AssistantService:
                 )
 
     async def _dispatch(
-        self, dialog: Dialog, decision: Decision, *, text: str, now: datetime,
+        self,
+        dialog: Dialog,
+        decision: Decision,
+        *,
+        text: str,
+        now: datetime,
     ) -> Reply:
         if decision.intent == "out_of_scope":
             return Reply(type=ReplyType.OUT_OF_SCOPE)
         if decision.intent == "reminder":
-            return await self._reminder(dialog, decision, text=text, now=now)
+            draft_time = self.clock() if self.clock is not None else now
+            return await self._reminder(dialog, decision, text=text, now=draft_time)
         previous = dialog.pending if decision.continue_pending else {}
         query = decision.query or text[:1200]
         question = query
@@ -172,7 +186,6 @@ class AssistantService:
             system=ANSWER_SYSTEM,
             payload={
                 "question": question,
-                "user_message": text[:600],
                 "profile": dialog.profile,
                 "response_style": style,
                 "evidence": [
@@ -215,7 +228,11 @@ class AssistantService:
             paragraphs.append(paragraph.text + " " + " ".join(markers))
         try:
             recommended = await self._recommend(
-                dialog, decision, query, style=style, exclude=set(used),
+                dialog,
+                decision,
+                query,
+                style=style,
+                exclude=set(used),
             )
         except KnowledgeUnavailable:
             logger.warning("Assistant catalog lookup unavailable; returning grounded answer")
@@ -252,7 +269,11 @@ class AssistantService:
         return select_recommendations(hits, dialog.profile, decision, limit=2)
 
     async def _no_evidence(
-        self, dialog: Dialog, decision: Decision, query: str, style: AnswerStyle,
+        self,
+        dialog: Dialog,
+        decision: Decision,
+        query: str,
+        style: AnswerStyle,
     ) -> Reply:
         recommendations = []
         if recommendations_requested(decision) or decision.learning_goal:
@@ -265,7 +286,12 @@ class AssistantService:
         )
 
     async def _reminder(
-        self, dialog: Dialog, decision: Decision, *, text: str, now: datetime,
+        self,
+        dialog: Dialog,
+        decision: Decision,
+        *,
+        text: str,
+        now: datetime,
     ) -> Reply:
         previous = dialog.pending if decision.continue_pending else {}
         previous = previous if previous.get("kind") == "reminder" else {}
@@ -279,16 +305,19 @@ class AssistantService:
         if minutes:
             # Интервал отсчитывается от сообщения, в котором собраны все данные.
             fields["local_datetime"] = resolve_relative_minutes(
-                minutes, fields.get("timezone"), now=now,
+                minutes,
+                fields.get("timezone"),
+                now=now,
             )
         reminder = ReminderFields.model_validate(fields)
         # Даже валидный ID LLM принимаем только среди показанных пользователю материалов.
         shown_ids = {item["id"] for item in dialog.recent_materials}
-        card = (
-            await self.knowledge.get_card(reminder.material_id)
-            if reminder.material_id is not None and reminder.material_id in shown_ids
-            else None
-        )
+        card = None
+        if reminder.material_id in shown_ids:
+            try:
+                card = await self.knowledge.get_card(reminder.material_id)
+            except KnowledgeUnavailable:
+                logger.warning("Assistant material link unavailable for reminder")
         intent, question = validate_reminder(
             reminder,
             now=now,

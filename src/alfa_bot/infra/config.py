@@ -22,7 +22,7 @@ class Settings(BaseSettings):
     knowledge_index: Path = PROJECT_ROOT / "private_data" / "index"
     ollama_base_url: str = "http://127.0.0.1:11434"
     llm_model: str = "qwen2.5:3b"
-    llm_timeout: float = Field(default=90, gt=0, le=600)
+    llm_timeout: float = Field(default=180, gt=0, le=600)
     ollama_context_length: int = Field(default=8192, ge=4096, le=32768)
     embedding_model: str = "bge-m3:567m"
     embedding_timeout: float = Field(default=180, gt=0, le=900)
