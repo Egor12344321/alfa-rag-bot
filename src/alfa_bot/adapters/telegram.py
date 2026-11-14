@@ -1,4 +1,5 @@
 import logging
+import re
 from datetime import UTC, datetime
 from typing import Literal
 from uuid import UUID
@@ -17,6 +18,7 @@ from aiogram.types import (
     KeyboardButton,
     LinkPreviewOptions,
     Message,
+    MessageEntity,
     ReplyKeyboardMarkup,
 )
 from sqlalchemy.exc import SQLAlchemyError
@@ -66,6 +68,8 @@ FREQUENCY_NAMES = {
     "monthly": "ежемесячно",
 }
 STATUS_NAMES = {"active": "включено", "paused": "отключено", "done": "выполнено"}
+MESSAGE_LIMIT = 4000  # Оставляем запас до лимита Telegram, считаем в UTF-16.
+SOURCE_MARKER = re.compile(r"\[([1-9][0-9]{0,2})\]")
 
 
 class ReminderState(StatesGroup):
@@ -102,79 +106,92 @@ def main_keyboard() -> ReplyKeyboardMarkup:
     )
 
 
-def _text_chunks(text: str) -> list[str]:
-    """Делим длинный текст без разметки, оставляя запас к лимиту Telegram.
+def _utf16_length(text: str) -> int:
+    return len(text.encode("utf-16-le")) // 2
 
-    Счёт в единицах UTF-16 учитывает emoji. По возможности сохраняем абзацы.
-    """
-    remaining = text.strip()
-    chunks = []
-    while remaining:
+
+def _text_chunks(text: str, *, links: list[tuple[int, int, str]] | None = None):
+    """Позиции ссылок входного текста заданы в символах Python."""
+    links = links or []
+    start = 0
+    while start < len(text):
+        while start < len(text) and text[start].isspace():
+            start += 1
+        if start == len(text):
+            return
+        end = start
         units = 0
-        end = 0
-        for char in remaining:
-            size = 2 if ord(char) > 0xFFFF else 1
-            if units + size > 4000:
+        for char in text[start:]:
+            units += 2 if ord(char) > 0xFFFF else 1
+            if units > MESSAGE_LIMIT:
                 break
-            units += size
             end += 1
-        if end < len(remaining):
-            boundary = remaining.rfind("\n", 0, end + 1)
-            if boundary < end // 2:
-                boundary = remaining.rfind(" ", 0, end + 1)
-            if boundary >= end // 2:
+        if end < len(text):
+            boundary = text.rfind("\n", start, end + 1)
+            midpoint = (start + end) // 2
+            if boundary < midpoint:
+                boundary = text.rfind(" ", start, end + 1)
+            if boundary >= midpoint:
                 end = boundary
-        chunks.append(remaining[:end].rstrip())
-        remaining = remaining[end:].lstrip()
-    return chunks
+            for link_start, link_end, _ in links:
+                if start < link_start < end < link_end:
+                    end = link_start
+                    break
+        entities = [
+            MessageEntity(
+                type="text_link",
+                offset=_utf16_length(text[start:link_start]),
+                length=_utf16_length(text[link_start:link_end]),
+                url=url,
+            )
+            for link_start, link_end, url in links
+            if start <= link_start < link_end <= end
+        ]
+        yield text[start:end].rstrip(), entities
+        start = end
 
 
-async def _send_text(
-    message: Message,
-    text: str,
-    *,
-    reply_markup: InlineKeyboardMarkup | None = None,
-) -> None:
-    chunks = _text_chunks(text)
-    for index, chunk in enumerate(chunks):
+async def _send_text(message: Message, text: str) -> None:
+    for chunk, _ in _text_chunks(text):
         await message.answer(
             chunk,
             parse_mode=None,
             link_preview_options=LinkPreviewOptions(is_disabled=True),
-            reply_markup=reply_markup if index == len(chunks) - 1 else None,
         )
 
 
-def _material_text(material: MaterialCard, *, heading: str, number: int) -> str:
+def _material_details(material: MaterialCard) -> str:
     access = MATERIAL_ACCESS_NAMES[material.access]
     if material.price:
         access += f" · {material.price}"
-    result = (
-        f"{heading} · {number}\n\n{material.title}\n{MATERIAL_KIND_NAMES[material.kind]} · {access}"
-    )
-    if material.description.strip():
-        result += f"\n\n{material.description}"
-    return result
+    details = f"{MATERIAL_KIND_NAMES[material.kind]} · {access}"
+    description = " ".join(material.description.split())
+    if description:
+        details += "\n" + (description[:297] + "…" if len(description) > 300 else description)
+    return details
 
 
 async def _send_answer(message: Message, answer: Answer) -> None:
-    await _send_text(message, answer.text)
-    for heading, materials in (
-        ("Источник", answer.sources),
-        ("Рекомендация", answer.recommendations),
-    ):
-        for number, material in enumerate(materials, start=1):
-            await _send_text(
-                message,
-                _material_text(material, heading=heading, number=number),
-                reply_markup=InlineKeyboardMarkup(
-                    inline_keyboard=[
-                        [
-                            InlineKeyboardButton(text="Открыть материал", url=material.url),
-                        ]
-                    ]
-                ),
-            )
+    body = answer.text
+    links = [
+        (match.start(), match.end(), answer.sources[number - 1].url)
+        for match in SOURCE_MARKER.finditer(body)
+        if (number := int(match[1])) <= len(answer.sources)
+    ]
+    if answer.recommendations:
+        body += "\n\nЧто изучить дальше"
+        for material in answer.recommendations:
+            title = " ".join(material.title.split())[:180]
+            body += "\n\n"
+            links.append((len(body), len(body) + len(title), material.url))
+            body += title + "\n" + _material_details(material)
+    for chunk, entities in _text_chunks(body, links=links):
+        await message.answer(
+            chunk,
+            entities=entities,
+            parse_mode=None,
+            link_preview_options=LinkPreviewOptions(is_disabled=True),
+        )
 
 
 def _draft_keyboard(draft: ReminderDraft) -> InlineKeyboardMarkup:
