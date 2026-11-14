@@ -1,0 +1,42 @@
+digraph G {
+
+graph [rankdir=TB, bgcolor="#ffffff", fontcolor="#52647a", pad=0.3, nodesep=0.35, ranksep=0.55,
+       fontname="DejaVu Sans", fontsize=13, splines=polyline];
+node [shape=box, style="rounded,filled", fontname="DejaVu Sans", fontsize=13,
+      color="#cdd8e2", fillcolor="#f3f6fa", fontcolor="#17283b", margin="0.20,0.14", penwidth=1.3];
+edge [fontname="DejaVu Sans", fontsize=10, color="#77889a", fontcolor="#52647a", arrowsize=0.7];
+
+node [fontsize=12];
+subgraph cluster_kb {
+ label="kb · версия базы знаний"; color="#add0bc"; style=rounded;
+ run [label="ingestion_runs\nid · модель · версии", fillcolor="#e7f4ed"];
+ mat [label="materials\nid · run_id · исходный ключ\nкарточка · доступ · URL", fillcolor="#e7f4ed"];
+ chunk [label="chunks\nid · material_id · purpose\ntext · embedding", fillcolor="#e7f4ed"];
+ topics [label="topics + material_topics\nТемы и связи M:N", fillcolor="#e7f4ed"];
+ run -> mat [label="1 : N"];
+ mat -> chunk [label="1 : N"];
+ mat -> topics [label="N : M"];
+}
+subgraph cluster_app {
+ label="app · диалоги и доставка"; color="#a7b9d7"; style=rounded;
+ users [label="users\nid · Telegram ID · профиль"];
+ conv [label="conversations\nuser_id · state · pending_payload"];
+ msgs [label="messages\nconversation_id · text · role"];
+ cites [label="message_sources\nmessage_id · chunk_id\nномер цитаты и snapshot ссылки"];
+ rems [label="reminders\nuser_id · правило · timezone\nnext_run_at · revision"];
+ delivs [label="deliveries\nreminder_id ИЛИ message_id\nуникальный ключ · status · lease", fillcolor="#e8efff"];
+ users -> conv [label="1 : N"];
+ conv -> msgs [label="1 : N"];
+ msgs -> cites [label="1 : N"];
+ users -> rems [label="1 : N"];
+ rems -> delivs [label="1 : N"];
+ msgs -> delivs [label="1 : N"];
+}
+cites -> chunk [label="FK на использованный фрагмент", style=dashed, constraint=false];
+rems -> mat [label="0..1 материал", style=dashed, constraint=false];
+{rank=same; run; users;}
+{rank=same; mat; conv; rems;}
+{rank=same; chunk; msgs; topics;}
+{rank=same; cites; delivs;}
+
+}

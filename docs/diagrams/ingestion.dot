@@ -1,0 +1,31 @@
+digraph G {
+
+graph [rankdir=TB, bgcolor="#ffffff", fontcolor="#52647a", pad=0.3, nodesep=0.35, ranksep=0.55,
+       fontname="DejaVu Sans", fontsize=13, splines=polyline];
+node [shape=box, style="rounded,filled", fontname="DejaVu Sans", fontsize=13,
+      color="#cdd8e2", fillcolor="#f3f6fa", fontcolor="#17283b", margin="0.20,0.14", penwidth=1.3];
+edge [fontname="DejaVu Sans", fontsize=10, color="#77889a", fontcolor="#52647a", arrowsize=0.7];
+
+read [label="Прочитать нужные таблицы\nи подтверждённые связи"];
+gate [label="Проверить статус, доступ,\nссылку и пригодность текста", fillcolor="#fff2e9"];
+full [label="Публичное содержание\nСтатьи · шаблоны · термины"];
+card [label="Публичные карточки\nВключая платные курсы"];
+omit [label="Закрытые / неизвестные данные\nИсключить и учесть в отчёте", fillcolor="#fff0f0"];
+chunks [label="Очистка и структурные chunks\nТокены проверяются токенизатором"];
+embed [label="Локальная embedding-модель\nВекторы и метаданные версии"];
+check [label="Проверки данных\nи контрольных вопросов", shape=diamond, style=filled, fillcolor="#fff2e9"];
+publish [label="COMMIT\nrun ready + переключение active_run_id", fillcolor="#e7f4ed", color="#7fae93"];
+fail [label="run failed\nПредыдущая версия остаётся активной", fillcolor="#fff0f0"];
+read -> gate;
+gate -> full [label="разрешённый полный текст"];
+gate -> card [label="только описание"];
+gate -> omit [label="не допущено"];
+full -> chunks [label="purpose=knowledge"];
+card -> chunks [label="purpose=catalog"];
+chunks -> embed -> check;
+check -> publish [label="пройдены"];
+check -> fail [label="ошибка"];
+{rank=same; full; card; omit;}
+{rank=same; publish; fail;}
+
+}

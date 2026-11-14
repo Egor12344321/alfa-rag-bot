@@ -1,0 +1,28 @@
+digraph G {
+
+graph [rankdir=TB, bgcolor="#ffffff", fontcolor="#52647a", pad=0.3, nodesep=0.35, ranksep=0.55,
+       fontname="DejaVu Sans", fontsize=13, splines=polyline];
+node [shape=box, style="rounded,filled", fontname="DejaVu Sans", fontsize=13,
+      color="#cdd8e2", fillcolor="#f3f6fa", fontcolor="#17283b", margin="0.20,0.14", penwidth=1.3];
+edge [fontname="DejaVu Sans", fontsize=10, color="#77889a", fontcolor="#52647a", arrowsize=0.7];
+
+source [label="alfa_source\nИсходный дамп · только чтение", shape=cylinder, fillcolor="#fff2e9"];
+ingest [label="ingest · по команде\nФильтры → очистка → chunks\nЛокальные embeddings"];
+app [label="app\nFastAPI + aiogram\nДиалог и knowledge", fillcolor="#e8efff", color="#8da7d6"];
+db [label="assistant_db · PostgreSQL + pgvector\nkb: материалы, каталог, векторы\napp: диалоги, reminders, deliveries", shape=cylinder, fillcolor="#e7f4ed", color="#7fae93"];
+worker [label="worker\nРасписание и очередь отправки", fillcolor="#e8efff", color="#8da7d6"];
+tg [label="Telegram · входящие\nСообщения и кнопки", fillcolor="#e6f5fa", color="#85b6ca"];
+sent [label="Telegram · доставка\nОтветы и напоминания", fillcolor="#e6f5fa", color="#85b6ca"];
+llm [label="LLM / API\nРазрешённые фрагменты\nбез персональных данных", fillcolor="#fff0f0", color="#d99a9a"];
+source -> ingest [label="SELECT"];
+ingest -> db [label="готовая версия"];
+tg -> app [label="webhook или polling"];
+app -> db [label="контекст, поиск, сохранение"];
+app -> llm [label="генерация"];
+db -> worker [dir=both, label="задания / результат"];
+worker -> sent [label="sendMessage"];
+{rank=same; source; tg;}
+{rank=same; ingest; app;}
+{rank=same; db; llm;}
+
+}

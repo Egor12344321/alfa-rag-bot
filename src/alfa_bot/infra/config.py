@@ -1,41 +1,56 @@
-from functools import lru_cache
-from pathlib import Path
+from typing import Literal
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from pydantic import Field, SecretStr
+from pydantic import SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
-
-PROJECT_ROOT = Path(__file__).resolve().parents[3]
+from sqlalchemy.engine import make_url
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(
-        env_file=PROJECT_ROOT / ".env",
-        env_file_encoding="utf-8",
-        extra="ignore",
+    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+
+    app_env: Literal["local", "test", "demo", "production"] = "local"
+    log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
+    database_url: SecretStr = SecretStr(
+        "postgresql+psycopg://alfa:alfa_local_only@localhost:5432/assistant_db"
     )
-    bot_token: str = Field(default="", repr=False)
-    database_url: str = Field(default="", repr=False)
-    deepseek_api_key: SecretStr = SecretStr("")
-    deepseek_base_url: str = "https://api.deepseek.com"
-    deepseek_model: str = "deepseek-flash"
-    llm_timeout: float = Field(default=45, gt=0, le=180)
-    knowledge_index: Path = PROJECT_ROOT / "private_data" / "index"
-    article_url_template: str = "https://kurs.alfabank.ru/articles/{slug}/"
+    source_database_url: SecretStr | None = None
+    telegram_bot_token: SecretStr | None = None
+    telegram_webhook_secret: SecretStr | None = None
+    llm_provider: str = "unconfigured"
+    llm_model: str = ""
+    llm_api_key: SecretStr | None = None
+    embedding_model: str = "intfloat/multilingual-e5-small"
+    default_timezone: str = "Europe/Moscow"
 
-    def validate_runtime(self) -> None:
-        missing = [
-            name
-            for name, value in (
-                ("BOT_TOKEN", self.bot_token),
-                ("DATABASE_URL", self.database_url),
-                ("DEEPSEEK_API_KEY", self.deepseek_api_key.get_secret_value()),
-            )
-            if not value.strip()
-        ]
-        if missing:
-            raise ValueError("Заполните .env: " + ", ".join(missing))
+    @field_validator(
+        "source_database_url",
+        "telegram_bot_token",
+        "telegram_webhook_secret",
+        "llm_api_key",
+        mode="before",
+    )
+    @classmethod
+    def blank_secret(cls, value):
+        return None if value == "" else value
 
+    @field_validator("database_url", "source_database_url")
+    @classmethod
+    def postgres_url(cls, value: SecretStr | None):
+        if value is not None:
+            try:
+                parsed = make_url(value.get_secret_value())
+            except Exception:
+                raise ValueError("Ожидается PostgreSQL URL с драйвером psycopg") from None
+            if parsed.drivername != "postgresql+psycopg" or not parsed.database:
+                raise ValueError("Ожидается postgresql+psycopg URL с именем БД")
+        return value
 
-@lru_cache
-def load_config() -> Settings:
-    return Settings()
+    @field_validator("default_timezone")
+    @classmethod
+    def timezone_exists(cls, value: str):
+        try:
+            ZoneInfo(value)
+        except ZoneInfoNotFoundError:
+            raise ValueError("Ожидается существующий IANA timezone") from None
+        return value
