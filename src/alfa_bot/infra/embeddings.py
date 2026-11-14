@@ -4,6 +4,7 @@ import asyncio
 import threading
 from typing import Protocol
 
+import httpx
 import numpy as np
 from numpy.typing import NDArray
 
@@ -46,3 +47,39 @@ class LocalEmbeddings:
 
     async def embed_documents(self, texts: list[str]) -> NDArray[np.float32]:
         return await asyncio.to_thread(self._encode, texts, "passage: ")
+
+
+class EmbeddingError(RuntimeError):
+    """Ошибка вычисления вектора без содержимого запроса."""
+
+
+class OllamaEmbeddings:
+    """Локальные эмбеддинги через HTTP API Ollama."""
+
+    def __init__(self, model_name: str, client: httpx.AsyncClient, *, timeout: float = 180):
+        self.model_name = model_name
+        self.client = client
+        self.timeout = timeout
+
+    async def embed_documents(self, texts: list[str]) -> NDArray[np.float32]:
+        try:
+            response = await self.client.post(
+                "/api/embed",
+                json={"model": self.model_name, "input": texts, "truncate": False},
+                timeout=self.timeout,
+            )
+            response.raise_for_status()
+            vectors = np.asarray(response.json()["embeddings"], dtype=np.float32)
+            if (
+                vectors.ndim != 2
+                or vectors.shape[0] != len(texts)
+                or not np.isfinite(vectors).all()
+                or not np.any(vectors, axis=1).all()
+            ):
+                raise ValueError("Invalid embedding shape or values")
+            return vectors
+        except (httpx.HTTPError, TypeError, KeyError, ValueError):
+            raise EmbeddingError("Ollama не вернул корректные эмбеддинги.") from None
+
+    async def embed_query(self, text: str) -> NDArray[np.float32]:
+        return (await self.embed_documents([text]))[0]

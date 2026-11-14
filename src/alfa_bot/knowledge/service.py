@@ -1,9 +1,27 @@
 import asyncio
+from typing import Protocol
 
-from alfa_bot.contracts import MaterialAccess, MaterialKind
+from alfa_bot.contracts import MaterialAccess, MaterialCard, MaterialKind
 from alfa_bot.infra.embeddings import Embeddings, LocalEmbeddings
 from alfa_bot.knowledge.models import SearchHit
 from alfa_bot.knowledge.repository import KnowledgeRepository
+
+
+class KnowledgePort(Protocol):
+    async def retrieve(self, query: str, *, limit: int | None = None) -> list[SearchHit]: ...
+
+    async def recommend(
+        self,
+        query: str,
+        *,
+        exclude: set[str] | None = None,
+        limit: int = 2,
+        kind: str = "any",
+        access: str = "any",
+    ) -> list[SearchHit]: ...
+
+    async def get_card(self, material_id: str) -> MaterialCard | None: ...
+
 
 
 class KnowledgeService:
@@ -34,7 +52,8 @@ class KnowledgeService:
             for i, score in ranking
         ]
 
-    async def retrieve(self, query: str, *, limit: int = 6) -> list[SearchHit]:
+    async def retrieve(self, query: str, *, limit: int | None = None) -> list[SearchHit]:
+        limit = 5 if limit is None else limit
         if not 1 <= limit <= 20:
             raise ValueError("limit должен быть от 1 до 20")
         counts = {}
@@ -74,6 +93,6 @@ class KnowledgeService:
                 result.append(hit)
         return result[:limit]
 
-    def get_card(self, material_id: str):
+    async def get_card(self, material_id: str) -> MaterialCard | None:
         material = self.repository.materials.get(material_id)
         return material.card() if material else None
