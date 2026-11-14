@@ -1,15 +1,40 @@
 name: checks
 on: [push, pull_request]
 
+permissions:
+  contents: read
+
 jobs:
   check:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:0.8.7-pg17@sha256:b513c48566e4777cd3370451400000c78eda6a08131d68f4c31d4a76f27bd8fd
+        env:
+          POSTGRES_USER: alfa_ci
+          POSTGRES_PASSWORD: alfa_ci
+          POSTGRES_DB: postgres
+        ports:
+          - 5432/tcp
+        options: >-
+          --health-cmd "pg_isready -U alfa_ci -d postgres"
+          --health-interval 3s
+          --health-timeout 3s
+          --health-retries 15
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
         with:
+          version: "0.13.8"
           python-version: "3.12"
-      - run: uv sync --frozen
-      - run: uv run ruff check .
-      - run: uv run pytest
-      - run: uv run alembic upgrade head --sql > /tmp/alfa_migration.sql
+      - run: uv sync --locked --extra dev
+      - run: uv run --no-sync ruff check .
+      - run: uv run --no-sync pytest
+        env:
+          ALFA_TEST_POSTGRES_URL: postgresql+asyncpg://alfa_ci:alfa_ci@127.0.0.1:${{ job.services.postgres.ports[5432] }}/postgres
+      - run: docker compose config --quiet
+        env:
+          BOT_TOKEN: "123456:dummy"
+      - run: docker compose build bot
+        env:
+          BOT_TOKEN: "123456:dummy"

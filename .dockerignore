@@ -1,0 +1,19 @@
+# Контекст сборки ограничен исходниками и синтетическим демо.
+**
+!Dockerfile
+!pyproject.toml
+!uv.lock
+!alembic.ini
+!migrations/
+!migrations/**
+!src/
+!src/**
+!demo/
+!demo/materials.jsonl
+
+**/__pycache__
+**/*.py[cod]
+**/.env
+**/.env.*
+**/*.backup
+**/*.dump

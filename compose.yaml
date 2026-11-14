@@ -1,0 +1,115 @@
+x-app: &app
+  image: alfa-rag-bot:local
+
+x-runtime-env: &runtime-env
+  DATABASE_URL: postgresql+asyncpg://alfa_bot:${POSTGRES_PASSWORD:-alfa_local_only}@db:5432/alfa_bot
+  KNOWLEDGE_BACKEND: pgvector
+  OLLAMA_BASE_URL: http://ollama:11434
+  LLM_MODEL: ${LLM_MODEL:-qwen2.5:3b}
+  LLM_TIMEOUT: ${LLM_TIMEOUT:-90}
+  OLLAMA_CONTEXT_LENGTH: ${OLLAMA_CONTEXT_LENGTH:-8192}
+  EMBEDDING_MODEL: ${EMBEDDING_MODEL:-bge-m3:567m}
+  EMBEDDING_TIMEOUT: ${EMBEDDING_TIMEOUT:-180}
+  KB_SCORE_THRESHOLD: ${KB_SCORE_THRESHOLD:-0.6}
+  KB_CATALOG_SCORE_THRESHOLD: ${KB_CATALOG_SCORE_THRESHOLD:-0.55}
+  KB_TOP_K: ${KB_TOP_K:-5}
+  LOG_LEVEL: ${LOG_LEVEL:-INFO}
+
+services:
+  db:
+    image: pgvector/pgvector:0.8.7-pg17@sha256:b513c48566e4777cd3370451400000c78eda6a08131d68f4c31d4a76f27bd8fd
+    environment:
+      POSTGRES_DB: alfa_bot
+      POSTGRES_USER: alfa_bot
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-alfa_local_only}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  ollama:
+    image: &ollama-image ollama/ollama:0.16.2@sha256:0764cf55b4a33bcecca10f718394d097ef7d464b75669a14f0cd4ac1a8b9a0c5
+    environment:
+      OLLAMA_NO_CLOUD: "1"
+      OLLAMA_NUM_PARALLEL: "1"
+      OLLAMA_CONTEXT_LENGTH: ${OLLAMA_CONTEXT_LENGTH:-8192}
+    volumes:
+      - modeldata:/root/.ollama
+    healthcheck:
+      test: ["CMD-SHELL", "OLLAMA_HOST=127.0.0.1:11434 ollama list"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  models:
+    image: *ollama-image
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+      OLLAMA_NO_CLOUD: "1"
+      LLM_MODEL: ${LLM_MODEL:-qwen2.5:3b}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-bge-m3:567m}
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        for model in "$$LLM_MODEL" "$$EMBEDDING_MODEL"; do
+          ollama show "$$model" >/dev/null 2>&1 || ollama pull "$$model"
+        done
+    depends_on:
+      ollama:
+        condition: service_healthy
+
+  bootstrap:
+    <<: *app
+    pull_policy: never
+    environment:
+      <<: *runtime-env
+      CHUNK_SIZE_TOKENS: ${CHUNK_SIZE_TOKENS:-600}
+      CHUNK_OVERLAP_TOKENS: ${CHUNK_OVERLAP_TOKENS:-50}
+      SOURCE_DATABASE_URL: ${SOURCE_DATABASE_URL:-}
+      KB_MATERIALS_PATH: ${KB_MATERIALS_PATH:-}
+      ARTICLE_URL_TEMPLATE:
+      DOCUMENT_URL_TEMPLATE:
+      GLOSSARY_URL_TEMPLATE:
+      COURSE_URL_TEMPLATE:
+    volumes:
+      - ./private_data:/app/private_data:ro
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        if [ -n "$$SOURCE_DATABASE_URL" ] && [ -n "$$KB_MATERIALS_PATH" ]; then
+          echo 'Укажите SOURCE_DATABASE_URL или KB_MATERIALS_PATH, одно из двух.' >&2
+          exit 2
+        fi
+        alembic upgrade head
+        if [ -n "$$SOURCE_DATABASE_URL" ]; then
+          exec python -m alfa_bot.knowledge.ingest --backend pgvector
+        fi
+        if [ -n "$$KB_MATERIALS_PATH" ]; then
+          exec python -m alfa_bot.knowledge.ingest --backend pgvector --materials "$$KB_MATERIALS_PATH"
+        fi
+        exec python -m alfa_bot.knowledge.ingest --backend pgvector --materials /app/demo/materials.jsonl --if-empty
+    depends_on:
+      db:
+        condition: service_healthy
+      models:
+        condition: service_completed_successfully
+
+  bot:
+    <<: *app
+    build: .
+    pull_policy: build
+    environment:
+      <<: *runtime-env
+      BOT_TOKEN: ${BOT_TOKEN:?Заполните BOT_TOKEN в .env}
+      REMINDER_INTERVAL: ${REMINDER_INTERVAL:-15}
+    depends_on:
+      bootstrap:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  modeldata:
