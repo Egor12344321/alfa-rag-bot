@@ -1,18 +1,28 @@
-t.venv/
+# Секреты
+.env
+.env.*
+!.env.example
+
+# Окружение и локальные данные
+.venv/
+venv/
+private_data/
+article_chunks.jsonl
+*.backup
+*.dump
+
+# Кеши и сборка
 __pycache__/
 *.py[cod]
 .pytest_cache/
 .ruff_cache/
-.env
-.env.*
-!.env.example
-private_data/*
-!private_data/README.md
-!private_data/.gitkeep
-*.backup
-*.dump
-*.jsonl
-*.log
+.mypy_cache/
 *.egg-info/
-dist/
 build/
+dist/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+.DS_Store
+Thumbs.db

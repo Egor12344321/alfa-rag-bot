@@ -1,58 +1,51 @@
-
 [build-system]
 requires = ["hatchling>=1.26,<2"]
 build-backend = "hatchling.build"
 
 [project]
 name = "alfa-rag-bot"
-version = "0.1.0"
-description = "Каркас Telegram RAG помощника Альфа Курс"
-readme = "README.md"
-requires-python = ">=3.12,<3.13"
+version = "0.5.0"
+description = "Integrated Alfa Course assistant, knowledge retrieval and Telegram reminders"
+requires-python = ">=3.12,<3.14"
 dependencies = [
-    "fastapi>=0.115,<1",
-    "uvicorn>=0.32,<1",
-    "pydantic-settings>=2.6,<3",
-    "sqlalchemy[asyncio]>=2.0.36,<2.1",
-    "psycopg[binary]>=3.2,<4",
-    "alembic>=1.14,<2",
-    "pgvector>=0.3,<1",
-    "aiogram>=3.15,<4",
-    "langchain-core>=1,<2",
-    "langchain-text-splitters>=1,<2",
-    "pyyaml>=6,<7",
-    "tzdata>=2024.2,<2027",
-    "langchain-openai>=1.8.0",
+  "aiogram>=3.15,<4",
+  "sqlalchemy[asyncio]>=2.0.36,<2.1",
+  "psycopg[binary]>=3.2,<4",
+  "alembic>=1.14,<2",
+  "pgvector>=0.3,<1",
+  "pydantic-settings>=2.6,<3",
+  "httpx[socks]>=0.28,<1",
+  "langchain-core>=1,<2",
+  "langchain-text-splitters>=1,<2",
+  "numpy>=1.26,<3",
+  "tzdata>=2024.2",
 ]
+
+[project.optional-dependencies]
+embeddings = ["sentence-transformers>=3.3,<6"]
+dev = ["pytest>=8,<10", "pytest-asyncio>=1,<2", "ruff>=0.8,<1"]
 
 [project.scripts]
-alfa-api = "alfa_bot.entrypoints.api:main"
-alfa-polling = "alfa_bot.entrypoints.polling:main"
-alfa-worker = "alfa_bot.entrypoints.worker:main"
-alfa-ingest = "alfa_bot.entrypoints.ingest:main"
-
-[dependency-groups]
-dev = [
-    "pytest>=8,<10",
-    "httpx>=0.28,<1",
-    "ruff>=0.8,<1",
-    "mypy>=2.4.1",
-    "pytest-asyncio>=1.5.0",
-]
-
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-asyncio_mode = "auto"
+alfa-bot = "alfa_bot.main:run"
+alfa-import-bundle = "alfa_bot.knowledge.bundle:main"
+alfa-ingest = "alfa_bot.knowledge.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/alfa_bot"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+markers = ["integration: requires TEST_DATABASE_URL with PostgreSQL and pgvector"]
 
 [tool.ruff]
 target-version = "py312"
 line-length = 100
 
 [tool.ruff.lint]
-select = ["E", "F", "I"]
+select = ["E", "F", "I", "B", "BLE"]
 
 [tool.ruff.lint.per-file-ignores]
 "migrations/versions/*.py" = ["E501"]

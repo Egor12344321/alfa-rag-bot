@@ -1,233 +1,278 @@
-"""Начальные контракты, не реализация бота. Python 3.11+.
+"""Публичные DTO Telegram, ответов и управления напоминаниями."""
 
-DTO не зависят от LangChain, aiogram или ORM. Публичные методы асинхронные.
-Persistence и транзакции принадлежат реализации соответствующего сервиса.
-Все user_id сверяются с авторизованным Telegram-пользователем на входе.
-"""
-
-from __future__ import annotations
-
-from dataclasses import dataclass
 from datetime import datetime
-from decimal import Decimal
+from enum import StrEnum
 from typing import Literal, Protocol
+from urllib.parse import urlsplit
 from uuid import UUID
 
-AccessType = Literal["free", "paid", "subscription", "unknown"]
-RepeatKind = Literal["once", "daily", "weekly"]
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
-class ValidationError(Exception):
-    """Некорректные входные значения; не ошибка зависимости."""
+class DTO(BaseModel):
+    model_config = ConfigDict(extra="forbid", validate_assignment=True)
 
 
-class NotFound(Exception):
-    """Объект отсутствует или недоступен этому пользователю."""
+class UserProfile(DTO):
+    """Сохранённые сведения и предпочтения пользователя."""
+
+    user_id: int = Field(gt=0)
+    business_stage: Literal["beginner", "owner", "solo_founder", "unknown"] = "unknown"
+    experience_level: Literal["novice", "experienced", "unknown"] = "unknown"
+    industry: str | None = Field(default=None, max_length=200)
+    tax_regime: str | None = Field(default=None, max_length=100)
+    response_style: Literal["auto", "brief", "detailed", "template", "learning"] = "auto"
+    preferred_access: Literal["any", "free", "paid"] = "any"
+    wants_courses: bool | None = None
+    goal: str | None = Field(default=None, max_length=500)
+    timezone: str | None = Field(default=None, max_length=64)
 
 
-class Conflict(Exception):
-    """Версия объекта/черновика уже изменилась."""
+class Material(DTO):
+    """Карточка материала с разрешённой ссылкой и известными условиями доступа."""
 
-
-class DependencyUnavailable(Exception):
-    """Временно недоступны БД, embeddings или генератор."""
-
-
-@dataclass(frozen=True)
-class Profile:
-    stage: str | None = None
-    industry: str | None = None
-    experience: str | None = None
-    current_goal: str | None = None
-    tax_regime: str | None = None
-    free_only: bool = False
-
-
-@dataclass(frozen=True)
-class SourceKey:
-    source_table: str
+    id: str
+    source_type: Literal["article", "document", "glossary", "course"]
     source_id: str
+    title: str = Field(min_length=1)
+    description: str = ""
+    url: str | None = None
+    is_paid: bool | None = None
+    price: str | None = None
+    level: Literal["intro", "advanced", "any"] = "any"
+    audience: list[str] = Field(default_factory=list)
+
+    @field_validator("url")
+    @classmethod
+    def valid_url(cls, value):
+        if value is None:
+            return None
+        try:
+            parts = urlsplit(value)
+            valid = (
+                parts.scheme in {"http", "https"}
+                and bool(parts.hostname)
+                and parts.username is None
+                and parts.password is None
+                and not any(c.isspace() for c in value)
+            )
+            _ = parts.port
+        except ValueError:
+            valid = False
+        if not valid:
+            raise ValueError("Ожидается HTTP(S)-ссылка без логина и пароля")
+        return value
 
 
-@dataclass(frozen=True)
-class Evidence:
-    chunk_id: UUID
-    material_id: UUID
-    source: SourceKey
-    title: str
-    text: str
-    url: str | None
-    distance: float  # cosine distance, НЕ вероятность правильности
-
-
-@dataclass(frozen=True)
-class SearchResult:
-    run_id: UUID
-    evidence: tuple[Evidence, ...]
-
-
-@dataclass(frozen=True)
-class MaterialCard:
+class RetrievedChunk(DTO):
     id: UUID
-    run_id: UUID
-    source: SourceKey
-    kind: str
-    title: str
-    public_summary: str
-    url: str  # только разрешённая предоставленная ссылка
-    access_type: AccessType
-    price: Decimal | None = None
-    currency: str | None = None
-    price_note: str | None = None
-    reason_features: tuple[str, ...] = ()
+    text: str
+    score: float = Field(ge=-1.00001, le=1.00001)
+    material: Material
 
 
-class Knowledge(Protocol):
-    async def retrieve(
-        self,
-        query: str,
-        *,
-        limit: int = 6,
-        run_id: UUID | None = None,
-        external_context: bool = True,
-    ) -> SearchResult:
-        """Только knowledge-фрагменты. Пустой evidence — штатный результат.
+class SearchRequest(DTO):
+    query: str = Field(min_length=1, max_length=8000)
+    top_k: int = Field(default=5, ge=1, le=20)
+    score_threshold: float = Field(default=0.6, ge=-1, le=1)
+    purpose: Literal["knowledge", "catalog"] = "knowledge"
+    profile: UserProfile | None = None
 
-        Если run_id не передан, выбрать active_run_id. external_context=True
-        дополнительно требует external_allowed. Профиль не фильтрует доступ.
-        """
-        ...
 
+class SearchResult(DTO):
+    chunks: list[RetrievedChunk] = Field(default_factory=list)
+    best_score: float | None = None
+
+
+class Recommendation(DTO):
+    material: Material
+    reason: str
+    score: float = Field(ge=-1.00001, le=1.00001)
+
+
+class KnowledgePort(Protocol):
+    async def search(self, request: SearchRequest) -> SearchResult: ...
     async def recommend(
         self,
         query: str,
-        profile: Profile,
+        profile: UserProfile,
         *,
-        run_id: UUID,
-        exclude: tuple[SourceKey, ...] = (),
+        exclude: set[str] | None = None,
         limit: int = 1,
-    ) -> tuple[MaterialCard, ...]:
-        """Активные разрешённые карточки того же run; free_only — жёсткий фильтр."""
-        ...
-
-    async def get_card(
-        self,
-        source: SourceKey,
-        *,
-        run_id: UUID | None = None,
-    ) -> MaterialCard | None:
-        """По исходному ключу разрешить карточку указанной/активной версии."""
-        ...
+    ) -> list[Recommendation]: ...
+    async def get_material(self, material_id: str) -> Material | None: ...
 
 
-@dataclass(frozen=True)
-class UserTurn:
-    update_id: int
-    user_id: UUID
-    conversation_id: UUID
-    text: str
-    received_at: datetime  # aware datetime
+class ReminderIntent(DTO):
+    """Проверенное локальное время и параметры создаваемого напоминания."""
 
-
-@dataclass(frozen=True)
-class HandledTurn:
-    message_id: UUID
-    delivery_ids: tuple[UUID, ...]
-    outcome: Literal["answer", "clarification", "no_answer", "reminder", "error"]
-
-
-class Assistant(Protocol):
-    async def handle_turn(self, turn: UserTurn) -> HandledTurn:
-        """Возвращает уже сохранённый результат; повтор update_id идемпотентен.
-
-        Ответ, ссылки и delivery сохраняются одной транзакцией. Долгие вызовы
-        LLM не держат row lock; состояние сверяется по version перед commit.
-        """
-        ...
-
-
-@dataclass(frozen=True)
-class ReminderIntent:
-    text: str | None
-    local_start: datetime | None  # naive local datetime + отдельная IANA timezone
-    timezone: str | None
-    repeat_kind: RepeatKind | None
-    interval_n: int = 1
-    material: SourceKey | None = None
-    date_origin: Literal["user", "verified_source"] = "user"
-    date_source_note: str | None = None
-
-
-@dataclass(frozen=True)
-class ReminderDraft:
-    draft_id: UUID
-    version: int
-    intent: ReminderIntent
-    missing_fields: tuple[str, ...]
-    preview_text: str
-    next_run_at: datetime | None  # aware UTC; None пока нельзя подтверждать
-
-
-@dataclass(frozen=True)
-class ReminderView:
-    id: UUID
-    revision: int
-    text: str
+    text: str = Field(min_length=1, max_length=1000)
+    local_datetime: datetime
     timezone: str
-    repeat_kind: RepeatKind
-    interval_n: int
-    next_run_at: datetime | None
+    frequency: Literal["once", "daily", "weekly", "monthly"] = "once"
+    material_url: str | None = None
+
+    @field_validator("material_url")
+    @classmethod
+    def valid_material_url(cls, value):
+        return Material.valid_url(value)
+
+    @field_validator("local_datetime")
+    @classmethod
+    def local_time_is_naive(cls, value):
+        if value.tzinfo is not None:
+            raise ValueError("Местное время передаётся без tzinfo")
+        return value
+
+
+class ReminderDraft(DTO):
+    """Серверный черновик: напоминание появится только после подтверждения."""
+
+    id: UUID
+    text: str
+    starts_at: datetime
+    timezone: str
+    frequency: str
+    material_url: str | None = None
+    expires_at: datetime
+
+    @field_validator("material_url")
+    @classmethod
+    def valid_material_url(cls, value):
+        return Material.valid_url(value)
+
+
+class ReminderView(DTO):
+    """Текущее состояние подтверждённого напоминания."""
+
+    id: UUID
+    text: str
+    starts_at: datetime
+    next_run_at: datetime
+    timezone: str
+    frequency: str
     status: str
+    material_url: str | None = None
+
+    @field_validator("material_url")
+    @classmethod
+    def valid_material_url(cls, value):
+        return Material.valid_url(value)
 
 
-class Reminders(Protocol):
-    async def prepare(
-        self,
-        *,
-        user_id: UUID,
-        conversation_id: UUID,
-        intent: ReminderIntent,
-        now: datetime,
-    ) -> ReminderDraft:
-        """Сохраняет только черновик conversation; now передаётся явно для тестов."""
-        ...
+class Answer(DTO):
+    """Текст ответа, источники и отдельные рекомендованные карточки."""
 
-    async def confirm(
-        self,
-        *,
-        user_id: UUID,
-        conversation_id: UUID,
-        draft_id: UUID,
-        expected_version: int,
-        confirmation_key: str,
-    ) -> ReminderView:
-        """В одной транзакции reminder + confirmation reply/outbox + закрытие draft.
+    text: str = Field(min_length=1)
+    sources: list[Material] = Field(default_factory=list)
+    recommendations: list[Recommendation] = Field(default_factory=list)
 
-        confirmation_key стабилен для user_id + draft_id, не равен update_id.
-        Сначала проверить повтор confirmation_key для того же пользователя,
-        затем актуальность draft и полноту полей. Подтверждённое время в будущем.
-        """
-        ...
 
-    async def list_for_user(self, user_id: UUID) -> tuple[ReminderView, ...]: ...
+class ReplyType(StrEnum):
+    ANSWER = "answer"
+    REMINDER = "reminder"
+    CLARIFICATION = "clarification"
+    OUT_OF_SCOPE = "out_of_scope"
 
-    async def change(
-        self,
-        *,
-        user_id: UUID,
-        reminder_id: UUID,
-        expected_revision: int,
-        replacement: ReminderIntent,
-    ) -> ReminderView:
-        """Полное подтверждённое новое правило; revision++, старые delivery отменить."""
-        ...
 
-    async def cancel(
-        self,
-        *,
-        user_id: UUID,
-        reminder_id: UUID,
-        expected_revision: int,
-    ) -> ReminderView:
-        """Проверить владельца; отменить будущие отправки и вернуть новое состояние."""
-        ...
+class Reply(DTO):
+    """Ответ assistant для Telegram: тип определяет допустимые поля."""
+
+    type: ReplyType
+    text: str = ""
+    answer: Answer | None = None
+    draft: ReminderDraft | None = None
+
+    @model_validator(mode="after")
+    def correct_payload(self):
+        if self.type == ReplyType.ANSWER:
+            valid = self.answer is not None and self.draft is None and not self.text
+        elif self.type == ReplyType.REMINDER:
+            valid = self.draft is not None and self.answer is None and not self.text
+        elif self.type == ReplyType.CLARIFICATION:
+            valid = bool(self.text.strip()) and self.answer is None and self.draft is None
+        else:
+            valid = self.answer is None and self.draft is None
+        if not valid:
+            raise ValueError("Поля Reply не соответствуют типу")
+        return self
+
+
+class UserRequest(DTO):
+    """Входное сообщение Telegram с владельцем, временем и ключом повтора."""
+
+    user_id: int = Field(gt=0)
+    chat_id: int
+    text: str = Field(max_length=8000)
+    now: datetime
+    update_id: int | None = None
+
+    @field_validator("now")
+    @classmethod
+    def aware(cls, value):
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("now должен содержать часовой пояс")
+        return value
+
+
+class ReminderAction(DTO):
+    """Действие кнопки или команды над напоминанием текущего пользователя."""
+
+    user_id: int = Field(gt=0)
+    chat_id: int
+    action: Literal[
+        "list",
+        "show",
+        "confirm",
+        "cancel_draft",
+        "frequency",
+        "disable",
+        "resume",
+        "delete",
+    ]
+    reminder_id: UUID | None = None
+    frequency: Literal["once", "daily", "weekly", "monthly"] | None = None
+    now: datetime
+
+    @field_validator("now")
+    @classmethod
+    def aware(cls, value):
+        return UserRequest.aware(value)
+
+
+class ActionResult(DTO):
+    """Результат управления: уведомление, одна карточка либо список."""
+
+    text: str = ""
+    reminder: ReminderView | None = None
+    items: list[ReminderView] = Field(default_factory=list)
+
+
+class AssistantPort(Protocol):
+    async def handle(self, request: UserRequest) -> Reply: ...
+    async def reminder_action(self, request: ReminderAction) -> ActionResult: ...
+
+
+class Delivery(DTO):
+    id: UUID
+    chat_id: int
+    text: str
+    material_url: str | None = None
+
+    @field_validator("material_url")
+    @classmethod
+    def valid_material_url(cls, value):
+        return Material.valid_url(value)
+
+
+class DeliveryRejected(Exception):
+    """Постоянная ошибка доставки: пользователь заблокировал бота и т.п."""
+
+
+class DeliveryRetry(Exception):
+    def __init__(self, seconds: float = 5):
+        self.seconds = seconds
+
+
+class DeliveryPort(Protocol):
+    async def send(self, delivery: Delivery) -> None: ...

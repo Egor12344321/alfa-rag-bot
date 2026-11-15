@@ -1,9 +1,8 @@
-
 import math
 import os
 from html import escape
 
-from alfa_bot.contracts import Evidence, Profile, SearchResult
+from alfa_bot.domain import Evidence, Profile, SearchResult
 
 
 def _load_max_distance() -> float:
@@ -12,14 +11,10 @@ def _load_max_distance() -> float:
     try:
         value = float(raw_value)
     except ValueError as exc:
-        raise ValueError(
-            "RAG_MAX_DISTANCE должен быть числом"
-        ) from exc
+        raise ValueError("RAG_MAX_DISTANCE должен быть числом") from exc
 
     if not math.isfinite(value) or value < 0:
-        raise ValueError(
-            "RAG_MAX_DISTANCE должен быть конечным неотрицательным числом"
-        )
+        raise ValueError("RAG_MAX_DISTANCE должен быть конечным неотрицательным числом")
 
     return value
 
@@ -53,12 +48,13 @@ def build_search_query(
 
 def filter_relevant(
     result: SearchResult,
+    max_distance: float = MAX_DISTANCE,
 ) -> tuple[Evidence, ...]:
     """Оставляет фрагменты с допустимым distance."""
     return tuple(
         evidence
         for evidence in result.evidence
-        if evidence.distance <= MAX_DISTANCE
+        if math.isfinite(evidence.distance) and evidence.distance <= max_distance
     )
 
 
@@ -72,10 +68,6 @@ def build_context(
         title = escape(item.title, quote=True)
         text = escape(item.text)
 
-        blocks.append(
-            f'<source n="{index}" title="{title}">\n'
-            f"{text}\n"
-            "</source>"
-        )
+        blocks.append(f'<source n="{index}" title="{title}">\n{text}\n</source>')
 
     return "\n\n".join(blocks)

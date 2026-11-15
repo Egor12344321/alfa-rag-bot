@@ -1,25 +1,26 @@
-
+import re
 from dataclasses import replace
-from datetime import UTC
+from typing import Any
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 from alfa_bot.assistant.context import (
     build_context,
     build_search_query,
     filter_relevant,
 )
-from alfa_bot.assistant.prompts import (
+from alfa_bot.assistant.core_prompts import (
     ANSWER_SYSTEM,
     INTENT_SYSTEM,
     build_intent_user,
 )
-from alfa_bot.assistant.repository import (
+from alfa_bot.assistant.core_schemas import AnswerDraft, IntentResult, ReminderSlots
+from alfa_bot.assistant.core_validation import AnswerRejected, validate_answer
+from alfa_bot.assistant.state import (
     AssistantRepository,
     AssistantState,
 )
-from alfa_bot.assistant.schemas import AnswerDraft, IntentResult
-from alfa_bot.assistant.validation import AnswerRejected, validate_answer
-from alfa_bot.contracts import (
+from alfa_bot.domain import (
     Conflict,
     DependencyUnavailable,
     Evidence,
@@ -29,12 +30,13 @@ from alfa_bot.contracts import (
     ReminderIntent,
     Reminders,
     UserTurn,
+    ValidationError,
 )
-from alfa_bot.infra.llm import StructuredLLM
+
+StructuredLLM = Any
 
 NO_ANSWER = (
-    "В моих материалах нет надёжной информации по этому вопросу. "
-    "Попробуйте переформулировать."
+    "В моих материалах нет надёжной информации по этому вопросу. Попробуйте переформулировать."
 )
 ERROR = "Сейчас не получилось ответить. Попробуйте ещё раз чуть позже."
 OUT_OF_SCOPE = "Я помогаю с вопросами предпринимателей и напоминаниями."
@@ -42,10 +44,7 @@ SMALLTALK = (
     "Привет! Я помогу с вопросами по предпринимательству "
     "и созданием напоминаний. Что хотите узнать?"
 )
-INVALID_REMINDER = (
-    "Не удалось определить корректное время напоминания. "
-    "Уточните дату и время."
-)
+INVALID_REMINDER = "Не удалось определить корректное время напоминания. Уточните дату и время."
 
 DEPENDENCY_ERRORS = (
     DependencyUnavailable,
@@ -61,11 +60,18 @@ class AssistantService:
         knowledge: Knowledge,
         reminders: Reminders,
         llm: StructuredLLM,
+        *,
+        max_distance: float = 0.55,
+        recommendation_limit: int = 1,
+        retrieval_limit: int = 6,
     ):
         self.repository = repository
         self.knowledge = knowledge
         self.reminders = reminders
         self.llm = llm
+        self.max_distance = max_distance
+        self.recommendation_limit = recommendation_limit
+        self.retrieval_limit = retrieval_limit
 
     async def handle_turn(self, turn: UserTurn) -> HandledTurn:
         saved = await self.repository.get_handled(turn.update_id)
@@ -97,8 +103,7 @@ class AssistantService:
 
         if was_clarification and original_question:
             intent_text = (
-                f"Исходный вопрос: {original_question}\n"
-                f"Уточнение пользователя: {turn.text}"
+                f"Исходный вопрос: {original_question}\nУточнение пользователя: {turn.text}"
             )
         else:
             intent_text = turn.text
@@ -106,14 +111,19 @@ class AssistantService:
         intent = await self.llm.structured(
             system=INTENT_SYSTEM,
             user=build_intent_user(
-                intent_text,
-                turn.received_at.astimezone(UTC).isoformat(),
+                f"Профиль: {state.profile}\n{intent_text}",
+                turn.received_at.astimezone(
+                    ZoneInfo(state.profile.timezone or "Europe/Moscow")
+                ).isoformat(),
                 state.history,
             ),
             schema=IntentResult,
         )
 
         state = self._apply_profile_patch(state, intent)
+
+        if intent.intent == "recommend":
+            return await self._recommend(turn, state, intent)
 
         if intent.intent == "reminder":
             return await self._reminder(turn, state, intent)
@@ -146,11 +156,7 @@ class AssistantService:
                 new_state=new_state,
             )
 
-        if (
-            intent.needs_clarification
-            and intent.clarification_question
-            and not was_clarification
-        ):
+        if intent.needs_clarification and intent.clarification_question and not was_clarification:
             question = original_question or turn.text
 
             new_state = self._updated_state(
@@ -172,7 +178,7 @@ class AssistantService:
         return await self._consult(
             turn,
             state,
-            original_question=original_question,
+            original_question=original_question or intent.search_query,
             clarification_answer=turn.text if was_clarification else None,
         )
 
@@ -213,10 +219,10 @@ class AssistantService:
 
         found = await self.knowledge.retrieve(
             query,
-            limit=6,
+            limit=self.retrieval_limit,
             external_context=True,
         )
-        evidence = filter_relevant(found)
+        evidence = filter_relevant(found, self.max_distance)
 
         if not evidence:
             return await self._save_no_answer(
@@ -230,6 +236,8 @@ class AssistantService:
             system=ANSWER_SYSTEM,
             user=(
                 f"{build_context(evidence)}\n\n"
+                f"Профиль пользователя: {state.profile}\n"
+                f"История: {state.history[-6:]}\n"
                 f"Исходный вопрос: {question}\n"
                 f"Уточнение пользователя: {clarification_answer or 'нет'}"
             ),
@@ -265,23 +273,25 @@ class AssistantService:
             state.profile,
             run_id=found.run_id,
             exclude=tuple(item.source for item in evidence),
-            limit=6 if state.profile.free_only else 1,
+            limit=6 if state.profile.free_only else max(1, self.recommendation_limit),
         )
 
         if state.profile.free_only:
-            cards = tuple(
-                card
-                for card in cards
-                if card.access_type == "free"
-            )
+            cards = tuple(card for card in cards if card.access_type == "free")
 
-        if cards:
-            answer += self._format_recommendation(cards[0])
+        cards = cards[: self.recommendation_limit]
 
         new_state = self._updated_state(
             state,
             turn,
             answer,
+        )
+
+        new_state = replace(
+            new_state,
+            recent_materials=tuple(
+                dict.fromkeys([item.source for item in evidence] + [card.source for card in cards])
+            ),
         )
 
         return await self._save(
@@ -292,6 +302,7 @@ class AssistantService:
             run_id=found.run_id,
             evidence=evidence,
             new_state=new_state,
+            cards=cards,
         )
 
     async def _save_no_answer(
@@ -316,25 +327,46 @@ class AssistantService:
             new_state=new_state,
         )
 
-    @staticmethod
-    def _format_recommendation(card: MaterialCard) -> str:
-        lines = [
-            "\n\n**Что ещё может быть полезно:**",
-            card.title,
-            card.public_summary,
-            f"Доступ: {card.access_type}",
-        ]
-
-        if card.price is not None:
-            currency = card.currency or ""
-            lines.append(f"Цена: {card.price} {currency}".strip())
-
-        if card.price_note:
-            lines.append(card.price_note)
-
-        lines.append(f"Материал: {card.url}")
-
-        return "\n".join(lines)
+    async def _recommend(self, turn, state, intent):
+        query = build_search_query(intent.search_query or turn.text, None, state.profile)
+        found = await self.knowledge.retrieve(query, limit=20, external_context=True)
+        profile = state.profile
+        if intent.requested_access == "paid":
+            profile = replace(profile, free_only=False)
+        candidates = list(
+            await self.knowledge.recommend(
+                query,
+                profile,
+                run_id=found.run_id,
+                limit=20,
+            )
+        )
+        if intent.requested_kind != "course":
+            for item in filter_relevant(found, self.max_distance):
+                card = await self.knowledge.get_card(item.source, run_id=found.run_id)
+                if card is not None:
+                    candidates.append(replace(card, score=1 - item.distance))
+        cards = tuple(
+            c
+            for c in candidates
+            if (
+                (not profile.free_only or c.access_type == "free")
+                and (intent.requested_access != "free" or c.access_type == "free")
+                and (intent.requested_access != "paid" or c.access_type in {"paid", "subscription"})
+                and (intent.requested_kind == "any" or c.kind == intent.requested_kind)
+            )
+        )[: max(1, self.recommendation_limit)]
+        text = (
+            "Подобрал материалы по вашему запросу."
+            if cards
+            else "В загруженном каталоге нет подходящих материалов с такими условиями."
+        )
+        new_state = self._updated_state(state, turn, text)
+        if cards:
+            new_state = replace(new_state, recent_materials=tuple(c.source for c in cards))
+        return await self._save(
+            turn, state, text, "answer", run_id=found.run_id, new_state=new_state, cards=cards
+        )
 
     async def _reminder(
         self,
@@ -342,14 +374,17 @@ class AssistantService:
         state: AssistantState,
         intent: IntentResult,
     ) -> HandledTurn:
-        reminder = intent.reminder
+        values = dict(state.pending_reminder)
+        if intent.reminder is not None:
+            values.update(
+                intent.reminder.model_dump(mode="json", exclude_none=True, exclude_unset=True)
+            )
+        reminder = ReminderSlots.model_validate(values) if values else None
+        state = replace(state, pending_reminder=values)
         original_question = state.pending_question or turn.text
 
         if reminder is None:
-            text = (
-                "Не удалось определить параметры напоминания. "
-                "Уточните, что и когда напомнить."
-            )
+            text = "Не удалось определить параметры напоминания. Уточните, что и когда напомнить."
             return await self._save_reminder_clarification(
                 turn,
                 state,
@@ -369,13 +404,29 @@ class AssistantService:
 
         material = None
 
-        if reminder.material_query:
+        reference = (reminder.material_query or "").casefold()
+        refers_to_recent = bool(
+            re.search(r"\b(этот|эта|это|эту|этого|данный|данную|последний)\b", reference)
+        )
+        if refers_to_recent and state.recent_materials:
+            # The last recommended card has priority over another search.
+            for key in reversed(state.recent_materials):
+                if "стать" in reference and key.source_table != "Articles":
+                    continue
+                if "курс" in reference and key.source_table != "Courses":
+                    continue
+                card = await self.knowledge.get_card(key)
+                if card is not None:
+                    material = card.source
+                    break
+
+        if reminder.material_query and material is None:
             found = await self.knowledge.retrieve(
                 reminder.material_query,
                 limit=3,
                 external_context=True,
             )
-            evidence = filter_relevant(found)
+            evidence = filter_relevant(found, self.max_distance)
 
             for item in evidence:
                 card = await self.knowledge.get_card(
@@ -385,31 +436,45 @@ class AssistantService:
                 if card is not None:
                     material = card.source
                     break
+            if material is None:
+                cards = await self.knowledge.recommend(
+                    reminder.material_query,
+                    state.profile,
+                    run_id=found.run_id,
+                    limit=1,
+                )
+                if cards:
+                    material = cards[0].source
 
         reminder_intent = ReminderIntent(
             text=reminder.text,
             local_start=local_start,
-            timezone=reminder.timezone,
-            repeat_kind=reminder.repeat_kind,
+            timezone=reminder.timezone or state.profile.timezone,
+            repeat_kind=reminder.repeat_kind or "once",
             interval_n=reminder.interval_n,
             material=material,
             date_origin="user",
             date_source_note=None,
         )
 
-        draft = await self.reminders.prepare(
-            user_id=turn.user_id,
-            conversation_id=turn.conversation_id,
-            intent=reminder_intent,
-            now=turn.received_at,
-        )
+        try:
+            draft = await self.reminders.prepare(
+                user_id=turn.user_id,
+                conversation_id=turn.conversation_id,
+                intent=reminder_intent,
+                now=turn.received_at,
+            )
+        except ValidationError as error:
+            return await self._save_reminder_clarification(
+                turn,
+                state,
+                original_question,
+                str(error),
+            )
 
         if draft.missing_fields:
             fields = ", ".join(draft.missing_fields)
-            text = (
-                f"{draft.preview_text}\n"
-                f"Для создания напоминания нужно уточнить: {fields}."
-            )
+            text = f"{draft.preview_text}\nДля создания напоминания нужно уточнить: {fields}."
             return await self._save_reminder_clarification(
                 turn,
                 state,
@@ -429,6 +494,7 @@ class AssistantService:
             draft.preview_text,
             "reminder",
             new_state=new_state,
+            draft=draft,
         )
 
     async def _save_reminder_clarification(
@@ -444,6 +510,7 @@ class AssistantService:
             text,
             pending_question=original_question,
             pending_clarification=text,
+            pending_reminder=state.pending_reminder,
         )
 
         return await self._save(
@@ -462,6 +529,7 @@ class AssistantService:
         *,
         pending_question: str | None = None,
         pending_clarification: str | None = None,
+        pending_reminder: dict | None = None,
     ) -> AssistantState:
         history = [
             *state.history,
@@ -471,10 +539,12 @@ class AssistantService:
 
         return AssistantState(
             version=state.version + 1,
+            recent_materials=state.recent_materials,
             history=history[-12:],
             profile=state.profile,
             pending_question=pending_question,
             pending_clarification=pending_clarification,
+            pending_reminder=pending_reminder or {},
         )
 
     async def _save(
@@ -487,6 +557,8 @@ class AssistantService:
         run_id: UUID | None = None,
         evidence: tuple[Evidence, ...] = (),
         new_state: AssistantState | None = None,
+        cards: tuple[MaterialCard, ...] = (),
+        draft=None,
     ) -> HandledTurn:
         try:
             return await self.repository.save_result(
@@ -497,6 +569,8 @@ class AssistantService:
                 run_id=run_id,
                 evidence=evidence,
                 new_state=new_state,
+                **({"cards": cards} if cards else {}),
+                **({"draft": draft} if draft is not None else {}),
             )
         except Conflict:
             saved = await self.repository.get_handled(turn.update_id)

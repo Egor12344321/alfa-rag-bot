@@ -1,76 +1,122 @@
+name: alfa-course-integrated
+
+x-logging: &logging
+  driver: local
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+x-environment: &environment
+  DB_HOST: db
+  DB_PORT: "5432"
+  POSTGRES_USER: "${POSTGRES_USER:-alfa_bot}"
+  POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-change_me}"
+  POSTGRES_DB: "${POSTGRES_DB:-alfa_bot}"
+  EMBEDDING_MODEL: "${EMBEDDING_MODEL:-BAAI/bge-m3}"
+  EMBEDDING_REVISION: "${EMBEDDING_REVISION:-5617a9f61b028005a4858fdac845db406aefb181}"
+  EMBEDDING_DIMENSION: "${EMBEDDING_DIMENSION:-1024}"
+  EMBEDDING_DEVICE: "${EMBEDDING_DEVICE:-cpu}"
+  EMBEDDING_THREADS: "${EMBEDDING_THREADS:-4}"
+  EMBEDDING_BATCH_SIZE: "${EMBEDDING_BATCH_SIZE:-8}"
+  EMBEDDING_CACHE_DIR: /app/private_data/models
+  CHUNK_TOKENS: "${CHUNK_TOKENS:-650}"
+  CHUNK_OVERLAP: "${CHUNK_OVERLAP:-50}"
+  TOP_K: "${TOP_K:-5}"
+  SCORE_THRESHOLD: "${SCORE_THRESHOLD:-0.6}"
+  RECOMMENDATION_THRESHOLD: "${RECOMMENDATION_THRESHOLD:-0.65}"
+  RECOMMENDATION_LIMIT: "${RECOMMENDATION_LIMIT:-1}"
+  HISTORY_LIMIT: "${HISTORY_LIMIT:-10}"
+  ONBOARDING_ENABLED: "${ONBOARDING_ENABLED:-false}"
+  DEFAULT_TIMEZONE: "${DEFAULT_TIMEZONE:-Europe/Moscow}"
+  REMINDER_INTERVAL: "${REMINDER_INTERVAL:-15}"
+  DRAFT_TTL_MINUTES: "${DRAFT_TTL_MINUTES:-30}"
+  LOG_LEVEL: "${LOG_LEVEL:-INFO}"
+  OMP_NUM_THREADS: "${EMBEDDING_THREADS:-4}"
+  MKL_NUM_THREADS: "${EMBEDDING_THREADS:-4}"
+  HF_HUB_OFFLINE: "${HF_HUB_OFFLINE:-0}"
+  HF_HUB_DISABLE_TELEMETRY: "1"
+  DO_NOT_TRACK: "1"
+  LANGSMITH_TRACING: "false"
+  LANGCHAIN_TRACING_V2: "false"
+
+x-app: &app
+  image: alfa-course-app:local
+  build:
+    context: .
+  init: true
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  logging: *logging
+  environment: *environment
+
 services:
   db:
-    image: pgvector/pgvector:0.8.1-pg17
+    image: pgvector/pgvector:pg17
+    restart: unless-stopped
+    logging: *logging
     environment:
-      POSTGRES_DB: ${POSTGRES_DB:-assistant_db}
-      POSTGRES_USER: ${POSTGRES_USER:-alfa}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-alfa_local_only}
+      POSTGRES_USER: "${POSTGRES_USER:-alfa_bot}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-change_me}"
+      POSTGRES_DB: "${POSTGRES_DB:-alfa_bot}"
     ports:
-      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+      - "127.0.0.1:${POSTGRES_PORT:-5433}:5432"
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      - app_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
-      interval: 3s
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 5s
       timeout: 3s
       retries: 20
+      start_period: 10s
 
   migrate:
-    build: .
+    <<: *app
+    restart: "no"
     command: ["alembic", "upgrade", "head"]
-    environment:
-      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-alfa}:${POSTGRES_PASSWORD:-alfa_local_only}@db:5432/${POSTGRES_DB:-assistant_db}
     depends_on:
       db:
         condition: service_healthy
 
-  app:
-    build: .
-    environment: &runtime_env
-      APP_ENV: ${APP_ENV:-local}
-      LOG_LEVEL: ${LOG_LEVEL:-INFO}
-      DEFAULT_TIMEZONE: ${DEFAULT_TIMEZONE:-Europe/Moscow}
-      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-alfa}:${POSTGRES_PASSWORD:-alfa_local_only}@db:5432/${POSTGRES_DB:-assistant_db}
-      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
-      TELEGRAM_WEBHOOK_SECRET: ${TELEGRAM_WEBHOOK_SECRET:-}
-      LLM_PROVIDER: ${LLM_PROVIDER:-unconfigured}
-      LLM_MODEL: ${LLM_MODEL:-}
-      LLM_API_KEY: ${LLM_API_KEY:-}
-      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-intfloat/multilingual-e5-small}
-    ports:
-      - "127.0.0.1:${API_PORT:-8000}:8000"
-    depends_on:
-      migrate:
-        condition: service_completed_successfully
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz', timeout=2)"]
-      interval: 10s
-      timeout: 3s
-      retries: 3
-
-  # Включить профиль после реализации tick/outbox. Сейчас команда завершается
-  # с понятным сообщением, чтобы не имитировать работающую доставку.
-  worker:
-    profiles: ["workers"]
-    build: .
-    command: ["alfa-worker"]
-    environment: *runtime_env
-    depends_on:
-      migrate:
-        condition: service_completed_successfully
-
-  ingest:
-    profiles: ["tools"]
-    build: .
-    command: ["alfa-ingest", "--help"]
-    environment:
-      <<: *runtime_env
-      SOURCE_DATABASE_URL: ${SOURCE_DATABASE_URL:-}
+  load_index:
+    <<: *app
+    restart: "no"
+    command: ["python", "-m", "alfa_bot.knowledge.bundle", "--bundle", "/prepared"]
     volumes:
-      - ./private_data:/private_data:ro
+      - type: bind
+        source: ./private_data/prepared
+        target: /prepared
+        read_only: true
+        bind:
+          create_host_path: false
     depends_on:
+      db:
+        condition: service_healthy
       migrate:
+        condition: service_completed_successfully
+
+  bot:
+    <<: *app
+    restart: unless-stopped
+    command: ["python", "-m", "alfa_bot.main"]
+    environment:
+      <<: *environment
+      BOT_TOKEN: "${BOT_TOKEN:-}"
+      DEEPSEEK_API_KEY: "${DEEPSEEK_API_KEY:-}"
+      DEEPSEEK_BASE_URL: "${DEEPSEEK_BASE_URL:-https://api.deepseek.com}"
+      DEEPSEEK_MODEL: "${DEEPSEEK_MODEL:-deepseek-flash}"
+      LLM_TIMEOUT: "${LLM_TIMEOUT:-60}"
+      LLM_MAX_TOKENS: "${LLM_MAX_TOKENS:-4000}"
+      LLM_RETRIES: "${LLM_RETRIES:-2}"
+    volumes:
+      - model_cache:/app/private_data/models
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+      load_index:
         condition: service_completed_successfully
 
 volumes:
-  pgdata:
+  app_data:
+  model_cache:
