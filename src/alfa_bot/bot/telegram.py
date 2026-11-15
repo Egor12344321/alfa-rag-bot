@@ -42,6 +42,19 @@ from alfa_bot.contracts import (
 logger = logging.getLogger(__name__)
 ASK = "Задать вопрос"
 REMINDERS = "Мои напоминания"
+PROFILE = "Мой профиль"
+HELP = "Справка"
+CANCEL = "Отменить запрос"
+NEW = "Очистить диалог"
+START = "Начать работу"
+
+# Текстовые кнопки используют те же команды assistant, что и ручной ввод /command.
+COMMAND_BUTTONS = {
+    START: "/start",
+    PROFILE: "/profile",
+    CANCEL: "/cancel",
+    NEW: "/new",
+}
 
 
 class ReminderCallback(CallbackData, prefix="r"):
@@ -58,8 +71,14 @@ class FrequencyCallback(CallbackData, prefix="f"):
 
 def _keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
-        keyboard=[[KeyboardButton(text=ASK)], [KeyboardButton(text=REMINDERS)]],
+        keyboard=[
+            [KeyboardButton(text=ASK), KeyboardButton(text=REMINDERS)],
+            [KeyboardButton(text=PROFILE), KeyboardButton(text=HELP)],
+            [KeyboardButton(text=CANCEL), KeyboardButton(text=NEW)],
+            [KeyboardButton(text=START)],
+        ],
         resize_keyboard=True,
+        is_persistent=True,
         input_field_placeholder="Вопрос или просьба о напоминании",
     )
 
@@ -182,7 +201,7 @@ def build_router(assistant: AssistantPort) -> Router:
                     UserRequest(
                         user_id=message.from_user.id,
                         chat_id=message.chat.id,
-                        text=message.text,
+                        text=COMMAND_BUTTONS.get(message.text, message.text),
                         now=datetime.now(UTC),
                         update_id=message.message_id,
                     )
@@ -208,6 +227,7 @@ def build_router(assistant: AssistantPort) -> Router:
             await _send(message, [Part(text)], _keyboard())
 
     @router.message(Command("help"))
+    @router.message(F.text == HELP)
     async def help_message(message: Message):
         await _send(
             message,
@@ -241,9 +261,10 @@ def build_router(assistant: AssistantPort) -> Router:
 
     @router.message(F.text == ASK)
     async def ask(message: Message):
-        await _send(message, [Part("Напишите ваш вопрос.")])
+        await _send(message, [Part("Напишите ваш вопрос.")], _keyboard())
 
     @router.message(Command("start", "new", "cancel", "profile"))
+    @router.message(F.text.in_(COMMAND_BUTTONS))
     async def command(message: Message):
         await handle_request(message)
 
